@@ -36,7 +36,7 @@ node tools/smoke_ai_filter.js   # AI 过滤层冒烟测试（mock chrome 与 Jev
 
 推送到 master 即自动发布：`.github/workflows/release.yml` 读取 `pakkujs/manifest.json` 的版本号（`YYYY.MDD.N`，按 Asia/Shanghai 当日日期校验），该版本无对应 tag 时自动构建 Chrome/Firefox 包、跑冒烟测试并创建 release（提交列表即 release note）。发布 = 把 manifest 版本号改成当天新序号并推送，无需其他手动步骤。
 
-发布后可自动上架商店（凭证缺失时自动跳过，不阻塞）：AMO 用 `web-ext sign --channel=listed`（secrets `WEB_EXT_API_KEY`/`WEB_EXT_API_SECRET`，附 `git archive` 源码包满足 AMO 源码审查）；Chrome Web Store 用 v2 API（secrets `CWS_CLIENT_ID`/`CWS_CLIENT_SECRET`/`CWS_REFRESH_TOKEN`，variables `CWS_EXTENSION_ID`/`CWS_PUBLISHER_ID`）。两个商店的首次 listing 都必须人工创建（API 不能创建新 item），之后新版本才走自动流程。
+发布产物：Chrome 包、Firefox 包、源码包（`git archive` 生成，供 AMO 人工提交时满足"提供源码"要求）。商店上架为人工操作：从 release 下载对应 zip，AMO 上传 firefox 包（listed 渠道，源码步骤上传 source 包或填仓库链接），Chrome Web Store 上传 chrome 包。
 
 ## 开发环境备注
 
