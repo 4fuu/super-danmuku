@@ -735,6 +735,12 @@ export async function ai_filter_chunk(
     // further ahead finish in the background (gate keeps playback behind them)
     const ship_margin_s = Math.max(pause_margin_s + 15, 30);
     const gate_margin_deadzone_s = 60; // windows behind the playhead still gate shipping
+    // max buffer: windows further ahead of the playhead than this are deferred
+    // until playback nears them (like bilibili's own video buffering); 0 = score
+    // everything to the end of the video. Never below ship_margin, or shipping
+    // would wait on windows the deferral refuses to score.
+    const max_buffer_s = Math.max(0, config.AI_MAX_BUFFER_S ?? 120);
+    const defer_ahead_s = max_buffer_s > 0 ? Math.max(max_buffer_s, ship_margin_s) : 0;
 
     // cache key excludes chunk size: with partial shipping, a re-run sees a
     // smaller input chunk (earlier deletions applied) and must still hit the cache
@@ -794,6 +800,10 @@ export async function ai_filter_chunk(
     gate_arm(pause_gate, win_ms / 1000, pause_margin_s);
 
     const tasks: Promise<void>[] = [];
+    // windows whose scoring is deferred by the max-buffer limit; a pump below
+    // releases them (by starting their tasks) as the playhead approaches
+    const deferred: {w: int, start: ()=>void}[] = [];
+    const all_tasks: Promise<void>[] = []; // deferred + immediate, for awaiting full completion
     for(const [w, cands_all] of [...windows.entries()].sort((a, b) => a[0] - b[0])) { // chronological: near-playhead windows score first
         // length limit: over-long danmaku skip judgement and pass through
         const cands = cands_all.filter(c => c.obj.content.length <= max_text_len);
@@ -813,7 +823,7 @@ export async function ai_filter_chunk(
         for(let i = 0; i < sorted.length; i += max_cand)
             batches.push(sorted.slice(i, i + max_cand));
 
-        tasks.push((async () => {
+        const score_window = async () => {
             const survivors: {c: Candidate, score: number}[] = [];
             const log_cands: any[] = [];
             const t_win = Date.now();
@@ -874,7 +884,36 @@ export async function ai_filter_chunk(
                 api_ms: Date.now() - t_win, error: win_err,
                 detail: log_cands.slice(0, 80),
             });
-        })());
+        };
+        // max buffer: a window far ahead of the playhead is not started yet; the
+        // deferred pump starts it when playback comes within the limit
+        if(defer_ahead_s > 0 && w_lo > gate_current_playhead_s() + defer_ahead_s) {
+            let started = false;
+            const p = new Promise<void>((resolve) => {
+                deferred.push({w, start: () => { if(!started) { started = true; resolve(); } }});
+            }).then(() => score_window());
+            all_tasks.push(p);
+        } else {
+            const t = score_window();
+            tasks.push(t);
+            all_tasks.push(t);
+        }
+    }
+
+    // deferred pump: as playback advances, release windows entering the buffer
+    // limit so their scoring starts (priority still orders them at the semaphore)
+    if(deferred.length) {
+        let pump_timer: any = setInterval(() => {
+            let ph = gate_current_playhead_s();
+            for(let i = deferred.length - 1; i >= 0; i--) {
+                if(deferred[i].w * (win_ms / 1000) <= ph + defer_ahead_s) {
+                    deferred[i].start();
+                    deferred.splice(i, 1);
+                }
+            }
+            if(!deferred.length)
+                clearInterval(pump_timer);
+        }, 1000);
     }
 
     // ship once the windows near the playhead (within one segment-ish margin)
@@ -913,13 +952,12 @@ export async function ai_filter_chunk(
             extra: chunk.extra,
         };
     }
-    // background continuation: keep scoring until the segment is fully done, then
-    // persist verdicts (the playback gate already paused the video if this wait
-    // would otherwise outrun playback)
-    void Promise.all(tasks).then(() => flush_verdict_store());
+    // background continuation: keep scoring (immediate + deferred windows) until
+    // the segment is fully done, then persist verdicts
+    void Promise.all(all_tasks).then(() => flush_verdict_store());
     if(ret.ai_windows) {
-        const budget_hit = windows_done < tasks.length;
-        console.info(`pakku ai_filter: seg ${segidx} windows=${ret.ai_windows} done=${windows_done}/${tasks.length} budget_hit=${budget_hit} deleted(spam)=${ret.ai_deleted} deleted(ratio)=${ret.ai_deleted_ratio} kept=${ret.chunk.objs.length}/${chunk.objs.length} ship_ms=${Date.now() - t_start}`);
+        const budget_hit = windows_done < all_tasks.length;
+        console.info(`pakku ai_filter: seg ${segidx} windows=${ret.ai_windows} done=${windows_done}/${all_tasks.length} budget_hit=${budget_hit} deferred=${deferred.length} deleted(spam)=${ret.ai_deleted} deleted(ratio)=${ret.ai_deleted_ratio} kept=${ret.chunk.objs.length}/${chunk.objs.length} ship_ms=${Date.now() - t_start}`);
         ai_log_append({
             type: 'seg', ts: Date.now(), segidx, title: video_ctx.title || '', bvid,
             windows: ret.ai_windows, done: windows_done, budget_hit,

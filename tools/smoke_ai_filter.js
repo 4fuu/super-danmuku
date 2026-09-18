@@ -136,6 +136,7 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
         AI_PAUSE_GATE: false, // gate needs a real <video>; exercised manually
         AI_VERDICT_CACHE: true, // scenario 5 covers the persistence path explicitly
         AI_MAX_TEXT_LEN: 40, // scenarios 1-7 assume long texts are judged; scenario 8 tests the limit itself
+        AI_MAX_BUFFER_S: 0, // legacy default: score to the end (scenario 11 tests the limit itself)
     };
 
     const res = await mod.ai_filter_chunk(chunk, config, 1);
@@ -396,6 +397,41 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     assert(call_order.length >= 8, 'requests were sent');
     const early = call_order.slice(0, 8).filter(x => x === '0~30' || x === '30~60' || x === '60~90');
     assert(early.length >= 3, `playhead-adjacent windows are sent early (got [${call_order.slice(0, 8).join(', ')}])`);
+
+    // ===== scenario 11: max buffer defers far-ahead windows =====
+    jev_calls = [];
+    jev_delay_ms = 0;
+    // playhead at 29.5 (fake video from scenario 9 is gone); set it back
+    const fake_video11 = {
+        currentTime: 5, paused: false,
+        pause() { this.paused = true; }, play() { this.paused = false; return Promise.resolve(); },
+        closest: () => null, parentElement: null,
+    };
+    global.document.querySelector = (sel) => sel === 'video' ? fake_video11 : null;
+    const cfg11 = {...config, AI_WINDOW_SECONDS: 30, AI_PAUSE_GATE: false, AI_MAX_BUFFER_S: 120, AI_BUDGET_MS: 20000};
+    const objs11 = [];
+    for(let t = 0; t < 900; t += 30) { // windows at 0,30,...,870 (30 windows)
+        objs11.push(mkobj(t * 1000 + 500, '缓冲窗口弹幕一', 3));
+        objs11.push(mkobj(t * 1000 + 1200, '缓冲窗口弹幕二', 3));
+        objs11.push(mkobj(t * 1000 + 1900, '缓冲窗口弹幕三', 3));
+    }
+    const t11 = Date.now();
+    const res11 = await mod.ai_filter_chunk({objs: objs11, extra: {proto_segidx: 30}}, cfg11, 30);
+    // scenario 10's background scoring may still be emitting calls into jev_calls;
+    // scope this scenario's requests by segidx 30 only
+    const s11_calls = jev_calls.filter(c => c.state.danmaku_window.segment_index === 30);
+    const sent_lo = s11_calls.map(c => parseInt(c.state.danmaku_window.time_range_seconds));
+    console.log(`scenario11: ship_ms=${Date.now() - t11} calls_at_ship=${s11_calls.length} max_window_seen=${Math.max(...sent_lo)}`);
+    // playhead 5 + 120s defer limit => only windows starting <= 125s may be sent
+    assert(sent_lo.every(x => x <= 125), `far-ahead windows deferred (max sent ${Math.max(...sent_lo)})`);
+    assert(s11_calls.length >= 4, 'near-playhead windows still scored');
+    // playhead advances past 800s: the pump releases the far windows
+    fake_video11.currentTime = 850;
+    await sleep(2600);
+    const sent_lo2 = jev_calls.filter(c => c.state.danmaku_window.segment_index === 30).map(c => parseInt(c.state.danmaku_window.time_range_seconds));
+    console.log(`scenario11 after seek: calls=${sent_lo2.length} max_window=${Math.max(...sent_lo2)}`);
+    assert(Math.max(...sent_lo2) >= 840, 'deferred windows start scoring once playback nears them');
+    global.document.querySelector = () => null;
 
     console.log('ALL ASSERTIONS PASSED');
     process.exit(0); // the gate's poll timer would otherwise hold the process open

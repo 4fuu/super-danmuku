@@ -385,6 +385,7 @@ function loadconfig() {
     id('ai-budget').value = config.AI_BUDGET_MS;
     id('ai-pause-gate').checked = config.AI_PAUSE_GATE;
     id('ai-pause-margin').value = config.AI_PAUSE_MARGIN_S;
+    id('ai-max-buffer').value = config.AI_MAX_BUFFER_S;
     id('ai-max-text-len').value = config.AI_MAX_TEXT_LEN;
     id('ai-verdict-cache').checked = config.AI_VERDICT_CACHE;
     void chrome.storage.local.get('AI_API_KEY', (st: any) => {
@@ -633,6 +634,7 @@ function update(this: HTMLInputElement) {
     config.AI_BUDGET_MS = safe_int(id('ai-budget').value, 5000, 120000, DEFAULT_CONFIG.AI_BUDGET_MS);
     config.AI_PAUSE_GATE = id('ai-pause-gate').checked;
     config.AI_PAUSE_MARGIN_S = safe_int(id('ai-pause-margin').value, 5, 120, DEFAULT_CONFIG.AI_PAUSE_MARGIN_S);
+    config.AI_MAX_BUFFER_S = safe_int(id('ai-max-buffer').value, 0, 3600, DEFAULT_CONFIG.AI_MAX_BUFFER_S);
     config.AI_MAX_TEXT_LEN = safe_int(id('ai-max-text-len').value, 5, 200, DEFAULT_CONFIG.AI_MAX_TEXT_LEN);
     config.AI_VERDICT_CACHE = id('ai-verdict-cache').checked;
     void chrome.storage.local.set({AI_API_KEY: id('ai-api-key').value.trim()});
@@ -669,7 +671,7 @@ for(let elem of [
     // AI 弹幕过滤
     'ai-filter', 'ai-api-key', 'ai-delete-threshold', 'ai-ratio', 'ai-window-seconds',
     'ai-subtitle-padding', 'ai-concurrency', 'ai-budget', 'ai-pause-gate', 'ai-pause-margin',
-    'ai-max-text-len', 'ai-verdict-cache',
+    'ai-max-buffer', 'ai-max-text-len', 'ai-verdict-cache',
     // 其他
     'popup-badge', 'combine-threads', 'read-player-blacklist',
 ]) {
