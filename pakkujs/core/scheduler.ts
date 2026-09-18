@@ -269,16 +269,23 @@ class Scheduler {
             try {
                 let t1 = +new Date();
 
-                // per-window deletions update the popup/badge as they happen;
-                // full-judgment shipping means the totals below are complete,
-                // but the hook keeps the popup live during long waits anyway
+                // every deletion path in ai_filter (threshold, ratio, cache hit,
+                // background completion) reports through this hook while it is
+                // registered, so the hook deltas are the ONLY place ai_deleted
+                // accumulates — adding AiFilterResult's totals on top would
+                // double-count every deleted danmaku
                 set_ai_stats_hook((delta) => {
                     this.ongoing_stats.ai_deleted += delta;
                     this.write_cur_message_stats();
                 });
+                const objs_before_ai = chunk_out.objs.length;
                 let ai_res = await ai_filter_chunk(chunk_out, this.config, segidx);
                 chunk_out = ai_res.chunk;
-                this.ongoing_stats.ai_deleted += ai_res.ai_deleted + ai_res.ai_deleted_ratio;
+                // num_onscreen_danmu was counted inside post_combine BEFORE the
+                // AI filter ran: subtract the clusters it removed so the popup's
+                // "弹幕 X → Y" reflects what actually ships to the player
+                this.ongoing_stats.num_onscreen_danmu = Math.max(0,
+                    this.ongoing_stats.num_onscreen_danmu - (objs_before_ai - ai_res.chunk.objs.length));
 
                 let t2 = +new Date();
                 this.ongoing_stats.ai_filter_time_ms += Math.ceil(t2 - t1);

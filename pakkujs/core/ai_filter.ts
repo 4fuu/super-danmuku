@@ -305,8 +305,8 @@ const global_sem = new Semaphore(8);
 
 // ---- diagnostic log (viewable & exportable from the options page) ----
 // incremental stats hook: the scheduler registers a callback so per-window
-// deletions land in the popup/badge as they happen (segments ship before all
-// windows finish, so the shipping-time total would undercount)
+// deletions land in the popup/badge live during the (long) full-judgment
+// wait; the scheduler relies on these deltas exclusively for ai_deleted
 let ai_stats_hook: ((delta_deleted: int)=>void) | null = null;
 export function set_ai_stats_hook(fn: ((delta_deleted: int)=>void) | null) {
     ai_stats_hook = fn;
