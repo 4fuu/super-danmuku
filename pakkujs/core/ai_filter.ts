@@ -357,9 +357,19 @@ let gate_pause_started = 0;
 let gate_done_seconds = 0;
 let gate_rate_samples: [number, number][] = []; // [ts, cumulative scored seconds]
 const GATE_MAX_PAUSE_MS = 60000;
-const GATE_ENGAGE_DELAY_MS = 600; // let the page, player and other extensions settle before engaging
+const GATE_ENGAGE_DELAY_MS = 600; // pause/resume interference waits out this settle delay
 let gate_engaged_key = '';
+let gate_engaged_at = 0;
 const gate_listener_videos = new WeakSet<object>();
+
+function gate_engage(key: string) {
+    // once per video: danmaku processing and the gate start immediately; only
+    // the actual pause (and its later resume) waits out the settle delay
+    if(gate_engaged_key === key)
+        return;
+    gate_engaged_key = key;
+    gate_engaged_at = Date.now();
+}
 
 function gate_reset_for_video(video_id: number) {
     if(gate_video_id === video_id)
@@ -468,32 +478,49 @@ function gate_tick() {
         }
         if(!unsafe && gate_max_end_s > 0 && now_s + gate_margin_s > gate_max_end_s + 1)
             unsafe = true; // approaching the edge of loaded danmaku coverage
+        let delay_elapsed = Date.now() >= gate_engaged_at + GATE_ENGAGE_DELAY_MS;
 
-        if(unsafe && !video.paused) {
-            gate_user_paused = false;
-            gate_own_pause_until = Date.now() + 500;
-            try {
-                video.pause();
-            } catch(e) {}
-            gate_paused_by_us = true;
-            gate_pause_started = Date.now();
-            gate_show_overlay(video);
-        } else if(gate_paused_by_us && video.paused) {
-            let gave_up = Date.now() - gate_pause_started > GATE_MAX_PAUSE_MS;
-            if(!unsafe || gave_up || gate_user_paused) {
-                gate_hide_overlay();
+        if(unsafe) {
+            if(!video.paused) {
+                if(delay_elapsed) {
+                    gate_user_paused = false;
+                    gate_own_pause_until = Date.now() + 500;
+                    try {
+                        video.pause();
+                    } catch(e) {}
+                    gate_paused_by_us = true;
+                    gate_pause_started = Date.now();
+                    gate_show_overlay(video);
+                } else {
+                    // settle delay: processing and the overlay are already running,
+                    // but we do not touch the player yet
+                    gate_show_overlay(video);
+                }
+            } else if(gate_paused_by_us) {
+                let gave_up = Date.now() - gate_pause_started > GATE_MAX_PAUSE_MS;
+                if(gave_up || gate_user_paused) {
+                    gate_hide_overlay();
+                    gate_paused_by_us = false;
+                    if(!gate_user_paused) {
+                        try {
+                            video.play().catch(()=>{});
+                        } catch(e) {}
+                    }
+                } else {
+                    gate_update_overlay();
+                }
+            }
+            // else: paused by the user — leave it alone
+        } else {
+            gate_hide_overlay();
+            if(gate_paused_by_us) {
                 gate_paused_by_us = false;
                 if(!gate_user_paused) {
                     try {
                         video.play().catch(()=>{});
                     } catch(e) {}
                 }
-            } else {
-                gate_update_overlay();
             }
-        } else if(!unsafe) {
-            gate_hide_overlay();
-            gate_paused_by_us = false;
         }
         gate_timer = setTimeout(gate_tick, 500);
     } catch(e) {
@@ -691,13 +718,10 @@ export async function ai_filter_chunk(
     }
     let bvid = get_bvid_from_url();
 
-    // engage delay (once per video): let the page, the player and other
-    // extensions settle before we touch the danmaku pipeline or the player
+    // engage (once per video): danmaku processing and the gate start immediately;
+    // only the pause/resume interference on the player waits out the settle delay
     let engage_key = 'e' + (cid || 0) + '|' + bvid;
-    if(gate_engaged_key !== engage_key) {
-        gate_engaged_key = engage_key;
-        await sleep_ms(GATE_ENGAGE_DELAY_MS);
-    }
+    gate_engage(engage_key);
 
     // responses normally wait for full scoring (the playback gate pauses the
     // video to cover the wait); the budget is only a safety valve against
