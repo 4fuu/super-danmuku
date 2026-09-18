@@ -1,6 +1,6 @@
 # 隐私政策 / Privacy Policy
 
-super-danmuku 是 [xmcp/pakku.js](https://github.com/xmcp/pakku.js)（GPLv3）的 fork。本政策说明扩展如何处理你的数据。
+super-danmuku 基于开源项目 [xmcp/pakku.js](https://github.com/xmcp/pakku.js)（GPLv3）修改而成。本政策说明扩展如何处理你的数据。
 
 ## 本地处理
 

@@ -1,5 +1,0 @@
-# build instruction:
-
-npm install
-npm run build:firefox
-cd dist/F

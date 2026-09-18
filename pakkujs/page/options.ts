@@ -35,8 +35,8 @@ function show_note(key: string, text: string | null, link: string | (()=>void) |
 if(!IS_FIREFOX && navigator.userAgent.includes('Firefox/'))
     show_note(
         'wrong_channel',
-        '你正在使用 Chrome 分支的 pakku，它在 Firefox 中无法正常工作。\nFirefox 用户请点击前往 Firefox 附加组件中心下载 pakku，然后卸载此版本。',
-        'https://addons.mozilla.org/zh-CN/firefox/addon/pakkujs/',
+        '你正在使用 Chrome 分支的 super-danmuku，它在 Firefox 中无法正常工作。\nFirefox 用户请前往 GitHub Releases 下载 firefox 版本，然后卸载此版本。',
+        'https://github.com/4fuu/super-danmuku/releases',
     );
 
 function id(x: string): any {
@@ -105,17 +105,8 @@ id('reset').addEventListener('click', function() {
     }
 });
 
-let ask_review_link = document.getElementById('ask-review-link') as HTMLAnchorElement | null;
-if(ask_review_link) {
-    if(IS_FIREFOX) {
-        ask_review_link.href = 'https://addons.mozilla.org/zh-CN/firefox/addon/pakkujs/reviews/';
-        ask_review_link.textContent = 'Mozilla Add-ons 网站';
-    }
-    if(IS_EDG) {
-        ask_review_link.href = 'https://microsoftedge.microsoft.com/addons/detail/pakku%EF%BC%9A%E5%93%94%E5%93%A9%E5%93%94%E5%93%A9%E5%BC%B9%E5%B9%95%E8%BF%87%E6%BB%A4%E5%99%A8/lnfcfeidnipnphibahlkdhalpkpmccoc';
-        ask_review_link.textContent = 'Microsoft Edge 加载项网站';
-    }
-}
+// (removed: cross-store "ask for review" link block from the original project;
+// re-add with this project's store URLs once the listings are live)
 
 // version check
 async function ver_check() {
@@ -185,7 +176,7 @@ let perms = await get_perms();
 if(is_permission_buggy(perms)) {
     show_note(
         'permission',
-        '需要授权 pakku 访问 bilibili.com 才能正常工作，点击修复权限。',
+        '需要授权 super-danmuku 访问 bilibili.com 才能正常工作，点击修复权限。',
         function() {
             // xxx: cannot use async here, https://bugzilla.mozilla.org/show_bug.cgi?id=1398833
             do_fix_permission(true, config.BREAK_UPDATE)
