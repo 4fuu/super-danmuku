@@ -717,6 +717,7 @@ export async function ai_filter_chunk(
     chunk: DanmuChunk<DanmuObjectRepresentative>,
     config: LocalizedConfig,
     segidx: int,
+    ship_range_ms: [int, int] | null = null,
 ): Promise<AiFilterResult> {
     const ret: AiFilterResult = {chunk, ai_deleted: 0, ai_deleted_ratio: 0, ai_windows: 0, ai_error: null};
     if(!config.AI_FILTER)
@@ -757,6 +758,28 @@ export async function ai_filter_chunk(
     // never re-requests it, so their deletions cannot be applied afterwards.
     // This trades completeness for tokens/latency and must be opt-in.
     const defer_ahead_s = max_buffer_s > 0 ? Math.max(max_buffer_s, ship_margin_s) : 0;
+    // range-aligned shipping: the player explicitly asks for [ps, pe) — ship as
+    // soon as that range is scored (it re-requests the next range by itself, so
+    // nothing unfiltered ships and nothing beyond the range blocks). Without a
+    // pending range request, fall back to the playhead-neighbourhood rule.
+    const ship_lo_ms = ship_range_ms ? ship_range_ms[0] : null;
+    const ship_hi_ms = ship_range_ms ? ship_range_ms[1] : null;
+    // economy mode anchors its deferral on the edge of the requested range (the
+    // furthest point the player is currently committed to) instead of the
+    // playhead, so it works identically in background-tab scoring.
+    // Scoring priority anchors on the START of the requested range: the player
+    // is waiting for that range from its beginning, so its head windows must
+    // score first even when the range is long.
+    const range_or_playhead_s = () => {
+        if(ship_hi_ms !== null)
+            return ship_hi_ms / 1000;
+        return gate_current_playhead_s();
+    };
+    const prio_anchor_s = () => {
+        if(ship_lo_ms !== null)
+            return ship_lo_ms / 1000;
+        return gate_current_playhead_s();
+    };
 
     // cache key excludes chunk size: with partial shipping, a re-run sees a
     // smaller input chunk (earlier deletions applied) and must still hit the cache
@@ -848,9 +871,10 @@ export async function ai_filter_chunk(
             for(const batch of batches) {
                 let scores: {p_worst: number, score: number, text: string}[];
                 try {
-                    // priority: the window closest to the current playhead is scored
-                    // first, so playback never waits behind unrelated later segments
-                    await global_sem.acquire(() => Math.abs(w_lo - gate_current_playhead_s()));
+                    // priority: score the window closest to the priority anchor —
+                    // the start of the requested range, or the playhead — so the
+                    // player-facing range is covered in playback order first
+                    await global_sem.acquire(() => Math.abs(w_lo - prio_anchor_s()));
                     try {
                         scores = await with_timeout(
                             score_batch(video_key, w_lo, w_hi, segidx, sub_pad_s, batch, cid, config.AI_VERDICT_CACHE === true),
@@ -895,6 +919,7 @@ export async function ai_filter_chunk(
             }
             windows_done++;
             gate_window_done(w, win_ms / 1000);
+            ship_wake(); // the shipping check re-runs as soon as any window lands
             ai_log_append({
                 type: 'window', ts: Date.now(), segidx, window: w_lo + '~' + w_hi,
                 cands: log_cands.length, del_spam: log_cands.filter(x => x.k === 0).length,
@@ -903,9 +928,9 @@ export async function ai_filter_chunk(
                 detail: log_cands.slice(0, 80),
             });
         };
-        // max buffer: a window far ahead of the playhead is not started yet; the
-        // deferred pump starts it when playback comes within the limit
-        if(defer_ahead_s > 0 && w_lo > gate_current_playhead_s() + defer_ahead_s) {
+        // max buffer: a window far beyond the requested range (or playhead) is
+        // not started yet; the deferred pump starts it when playback nears it
+        if(defer_ahead_s > 0 && w_lo > range_or_playhead_s() + defer_ahead_s) {
             let started = false;
             const p = new Promise<void>((resolve) => {
                 deferred.push({w, start: () => { if(!started) { started = true; resolve(); } }});
@@ -941,9 +966,24 @@ export async function ai_filter_chunk(
     // their unjudged danmaku ship as-is; the gate delays playback until the
     // pump releases and scores them as the playhead approaches.
     const my_round = gate_round_seq;
+    // wake-up channel for the shipping check: any completed window resolves the
+    // current sleeper so it re-evaluates immediately instead of on the poll tick
+    let ship_wake_fn: (()=>void) | null = null;
+    const ship_wake = () => { if(ship_wake_fn) ship_wake_fn(); };
     const ship_ready = () => {
         if(gate_round_seq !== my_round)
             return true; // superseded by a newer scoring round — stop waiting
+        if(ship_hi_ms !== null) { // range request: wait for windows intersecting [ps, pe)
+            let lo = Math.floor(ship_lo_ms! / win_ms);
+            let hi = Math.floor(Math.max(0, ship_hi_ms! - 1) / win_ms);
+            for(const w of windows.keys()) {
+                if(w < lo || w > hi)
+                    continue;
+                if(!gate_done_set().has(w))
+                    return false;
+            }
+            return true;
+        }
         let ph = gate_current_playhead_s();
         let lo = Math.max(0, Math.floor((ph - gate_margin_deadzone_s) / (win_ms / 1000)));
         let hi = Math.floor((ph + ship_margin_s) / (win_ms / 1000));
@@ -958,14 +998,17 @@ export async function ai_filter_chunk(
     await Promise.race([
         (async () => {
             while(!ship_ready()) {
-                // poll, but wake as soon as any window finishes: segment tasks
-                // complete synchronously on cache hits and the ship check must
-                // not add a fixed latency on top
-                await Promise.race([sleep_ms(250), Promise.all(tasks).catch(()=>{})]);
+                // poll as a backstop, but wake immediately when any window lands
+                await new Promise<void>((resolve) => {
+                    ship_wake_fn = resolve;
+                    setTimeout(resolve, 250);
+                });
+                ship_wake_fn = null;
             }
         })(),
         new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, deadline - Date.now()))),
     ]);
+    ship_wake_fn = null;
 
     if(deleted.size || ratio_deleted.size) {
         ret.chunk = {

@@ -276,7 +276,23 @@ class Scheduler {
                     this.ongoing_stats.ai_deleted += delta;
                     this.write_cur_message_stats();
                 });
-                let ai_res = await ai_filter_chunk(chunk_out, this.config, segidx);
+                // the player pulls danmaku in play ranges (ps/pe, e.g. 0~120s then
+                // 120~360s inside segment 1): ship as soon as the requested range
+                // is scored — the player re-requests the next range by itself, so
+                // nothing unfiltered can ship and nothing beyond the range blocks
+                let ship_range_ms: [int, int] | null = null;
+                for(const [egress] of this.egresses) {
+                    if(egress.type!=='proto_seg' || egress.segidx!==segidx)
+                        continue;
+                    if(egress.ps===null || egress.pe===null)
+                        continue;
+                    if(!ship_range_ms)
+                        ship_range_ms = [egress.ps, egress.pe];
+                    else { // intersect overlapping range requests
+                        ship_range_ms = [Math.min(ship_range_ms[0], egress.ps), Math.max(ship_range_ms[1], egress.pe)];
+                    }
+                }
+                let ai_res = await ai_filter_chunk(chunk_out, this.config, segidx, ship_range_ms);
                 chunk_out = ai_res.chunk;
                 this.ongoing_stats.ai_deleted += ai_res.ai_deleted + ai_res.ai_deleted_ratio;
 

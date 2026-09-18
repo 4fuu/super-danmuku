@@ -163,7 +163,10 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     assert(ai_log_msgs.some(m => m.type === 'window'), 'per-window log records emitted');
     assert(ai_log_msgs.some(m => m.type === 'seg'), 'per-segment log record emitted');
 
-    // rerun -> cache hit (no new jev calls)
+    // rerun -> cache hit (no new jev calls); drain background scoring first —
+    // partial shipping returns before far windows finish, and a rerun racing
+    // them would re-request what background scoring has not cached yet
+    await sleep(400);
     const calls_before = jev_calls.length;
     const res2 = await mod.ai_filter_chunk(chunk, config, 1);
     assert(jev_calls.length === calls_before, 'cache prevents re-scoring');
@@ -209,6 +212,7 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
             objs3.push(mkobj(w * 30000 + i * 1000, `并发测试${w}-${i}`, 1));
     const cfg3 = {...config, AI_CONCURRENCY: 2, AI_BUDGET_MS: 20000};
     const res3 = await mod.ai_filter_chunk({objs: objs3, extra: {proto_segidx: 3}}, cfg3, 3);
+    await sleep(400); // partial shipping returns before far windows finish
     console.log(`scenario3: windows=${res3.ai_windows} calls=${jev_calls.length} max_inflight=${max_inflight}`);
     assert(jev_calls.length === 6, 'all six windows scored');
     assert(max_inflight <= 2, `concurrency limit respected (max_inflight=${max_inflight})`);
@@ -280,7 +284,7 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     await sleep(600); // background pass completes
     assert(reload_requests.length === 0, 'no player reload requests (mechanism removed)');
 
-    // ===== scenario 7: full scoring before shipping (default behavior) =====
+    // ===== scenario 7: near-playhead windows are fully filtered before shipping =====
     jev_calls = [];
     jev_delay_ms = 100;
     const objs7 = [];
@@ -292,8 +296,11 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     const res7 = await mod.ai_filter_chunk({objs: objs7, extra: {proto_segidx: 8}}, cfg7, 8);
     const dt7 = Date.now() - t7;
     console.log(`scenario7: shipped in ${dt7}ms deleted=${res7.ai_deleted} kept=${res7.chunk.objs.length}`);
-    assert(dt7 >= 90, `response waits for full scoring (elapsed ${dt7}ms >= 100ms of API latency)`);
-    assert(res7.chunk.objs.length === 0 && res7.ai_deleted === 18, `everything filtered before shipping (deleted ${res7.ai_deleted})`);
+    // playhead 0 => windows 0,1 (0~60s) gate the response and must be filtered in full
+    assert(dt7 >= 90, `response waits for its gating windows (elapsed ${dt7}ms >= 100ms of API latency)`);
+    assert(res7.ai_deleted >= 12 && res7.chunk.objs.length <= 6, `near-playhead windows fully filtered before shipping (deleted ${res7.ai_deleted})`);
+    await sleep(400); // background completes the rest
+    assert(jev_calls.length === 3, `background scoring completes the far window (got ${jev_calls.length})`);
 
     // ===== scenario 8: length limit skips judgement, passes through =====
     jev_calls = [];
@@ -431,6 +438,36 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     const sent_lo2 = jev_calls.filter(c => c.state.danmaku_window.segment_index === 30).map(c => parseInt(c.state.danmaku_window.time_range_seconds));
     console.log(`scenario11 after seek: calls=${sent_lo2.length} max_window=${Math.max(...sent_lo2)}`);
     assert(Math.max(...sent_lo2) >= 840, 'deferred windows start scoring once playback nears them');
+    global.document.querySelector = () => null;
+
+    // ===== scenario 12: range-aligned shipping (player asks for [ps, pe)) =====
+    await sleep(1500); // let scenario 11's background scoring fully drain the semaphore
+    jev_calls = [];
+    jev_delay_ms = 60;
+    const fake_video12 = {currentTime: 5, paused: false, pause() {this.paused = true;}, play() {this.paused = false; return Promise.resolve();}, closest: () => null, parentElement: null};
+    global.document.querySelector = (sel) => sel === 'video' ? fake_video12 : null;
+    const cfg12 = {...config, AI_WINDOW_SECONDS: 30, AI_PAUSE_GATE: false, AI_MAX_BUFFER_S: 0, AI_CONCURRENCY: 1, AI_BUDGET_MS: 20000};
+    const objs12 = [];
+    for(let t = 0; t < 180; t += 30) { // windows 0..150 (6 windows over 0~180s)
+        objs12.push(mkobj(t * 1000 + 500, '区间窗口甲', 3));
+        objs12.push(mkobj(t * 1000 + 1200, '区间窗口乙', 3));
+        objs12.push(mkobj(t * 1000 + 1900, '区间窗口丙', 3));
+    }
+    const t12 = Date.now();
+    const res12 = await mod.ai_filter_chunk({objs: objs12, extra: {proto_segidx: 40}}, cfg12, 40, [0, 120000]); // player asked 0~120s
+    const ship_ms12 = Date.now() - t12;
+    const judged_at_ship = jev_calls.filter(c => c.state.danmaku_window.segment_index === 40).length;
+    console.log(`scenario12: ship_ms=${ship_ms12} windows_judged_at_ship=${judged_at_ship}`);
+    // only windows intersecting [0s, 120s) gate shipping (4 windows x 60ms = ~240ms);
+    // the whole segment would take ~360ms. The 5th request may start right as the
+    // ship decision lands, so strictly-less-than-6 plus the timing bound is the check.
+    assert(ship_ms12 < 330, `range request does not wait for the whole segment (${ship_ms12}ms)`);
+    assert(judged_at_ship < 6, `range ship does not wait for out-of-range windows (judged ${judged_at_ship})`);
+    // the rest must keep scoring in the background and complete afterwards
+    await sleep(600);
+    const judged_after = jev_calls.filter(c => c.state.danmaku_window.segment_index === 40).length;
+    console.log(`scenario12 after: windows_judged=${judged_after}`);
+    assert(judged_after === 6, `background scoring completes the whole segment (got ${judged_after})`);
     global.document.querySelector = () => null;
 
     console.log('ALL ASSERTIONS PASSED');
