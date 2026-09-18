@@ -105,14 +105,16 @@ id('reset').addEventListener('click', function() {
     }
 });
 
-let ask_review_link = id('ask-review-link');
-if(IS_FIREFOX) {
-    ask_review_link.href = 'https://addons.mozilla.org/zh-CN/firefox/addon/pakkujs/reviews/';
-    ask_review_link.textContent = 'Mozilla Add-ons 网站';
-}
-if(IS_EDG) {
-    ask_review_link.href = 'https://microsoftedge.microsoft.com/addons/detail/pakku%EF%BC%9A%E5%93%94%E5%93%A9%E5%93%94%E5%93%A9%E5%BC%B9%E5%B9%95%E8%BF%87%E6%BB%A4%E5%99%A8/lnfcfeidnipnphibahlkdhalpkpmccoc';
-    ask_review_link.textContent = 'Microsoft Edge 加载项网站';
+let ask_review_link = document.getElementById('ask-review-link') as HTMLAnchorElement | null;
+if(ask_review_link) {
+    if(IS_FIREFOX) {
+        ask_review_link.href = 'https://addons.mozilla.org/zh-CN/firefox/addon/pakkujs/reviews/';
+        ask_review_link.textContent = 'Mozilla Add-ons 网站';
+    }
+    if(IS_EDG) {
+        ask_review_link.href = 'https://microsoftedge.microsoft.com/addons/detail/pakku%EF%BC%9A%E5%93%94%E5%93%A9%E5%93%94%E5%93%A9%E5%BC%B9%E5%B9%95%E8%BF%87%E6%BB%A4%E5%99%A8/lnfcfeidnipnphibahlkdhalpkpmccoc';
+        ask_review_link.textContent = 'Microsoft Edge 加载项网站';
+    }
 }
 
 // version check
@@ -140,7 +142,7 @@ async function ver_check() {
 
         console.log('latest version ', latest_ver);
         if(latest_ver) {
-            if(latest_ver !== version) {
+            if(latest_ver !== version.replace(/^v/, '')) {
                 let update_url = rel.html_url || 'https://github.com/4fuu/super-danmuku/releases';
                 show_note(
                     'pakku_version',
@@ -169,63 +171,6 @@ async function ver_check() {
     }
 }
 void ver_check();
-
-// ---- AI filter log: view / clear / export ----
-function ai_log_get(): Promise<any[]> {
-    return new Promise((resolve) => {
-        chrome.runtime.sendMessage({type: 'ai_log_get'}, (resp: any) => {
-            if(chrome.runtime.lastError)
-                return resolve([]);
-            resolve((resp && resp.lines) || []);
-        });
-    });
-}
-
-function render_ai_log(lines: any[]) {
-    let view = id('ai-log-view') as HTMLDivElement;
-    let summary = id('ai-log-summary');
-    summary.textContent = `${lines.length} 条记录`;
-    if(!lines.length) {
-        view.style.display = 'none';
-        view.textContent = '';
-        return;
-    }
-    view.style.display = 'block';
-    let out: string[] = [];
-    for(let i = lines.length - 1; i >= 0; i--) {
-        let r = lines[i];
-        let ts = new Date(r.ts).toLocaleTimeString();
-        if(r.type === 'seg') {
-            out.push(`[${ts}] 分片${r.segidx} 「${r.title}」 窗口=${r.windows} 完成=${r.done}${r.budget_hit ? '（超预算先行展示）' : ''} 删刷屏=${r.del_spam} 淘汰=${r.del_ratio} 保留=${r.kept}/${r.total} 耗时=${r.ship_ms}ms`);
-        } else if(r.type === 'window') {
-            out.push(`[${ts}] 分片${r.segidx} 窗口${r.window}s 候选=${r.cands} 删=${r.del_spam}+${r.del_ratio} ${r.api_ms}ms${r.error ? ' 错误: ' + r.error : ''}`);
-            for(let c of r.detail || [])
-                out.push(`    ${c.k === 0 ? '✗删' : c.k === 2 ? '↓汰' : '✓留'} p=${c.p.toFixed(2)} q=${c.s} ×${c.n} ${c.t}`);
-        }
-    }
-    view.textContent = out.join('\n');
-}
-
-function ai_log_refresh() {
-    void ai_log_get().then(render_ai_log);
-}
-
-id('ai-log-refresh').addEventListener('click', ai_log_refresh);
-id('ai-log-clear').addEventListener('click', () => {
-    chrome.runtime.sendMessage({type: 'ai_log_clear'}, () => void chrome.runtime.lastError);
-    render_ai_log([]);
-});
-id('ai-log-export').addEventListener('click', () => {
-    void ai_log_get().then((lines) => {
-        let blob = new Blob([JSON.stringify({exported_at: new Date().toISOString(), records: lines}, null, 2)], {type: 'application/json'});
-        let a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = 'super-danmuku-ai-log.json';
-        a.click();
-        URL.revokeObjectURL(a.href);
-    });
-});
-ai_log_refresh();
 
 function get_perms(): Promise<Permissions> {
     return new Promise((resolve)=>{
@@ -457,7 +402,9 @@ function loadconfig() {
     id('ai-subtitle-padding').value = config.AI_SUBTITLE_PADDING_SECONDS;
     id('ai-concurrency').value = config.AI_CONCURRENCY;
     id('ai-budget').value = config.AI_BUDGET_MS;
-    id('ai-retroactive').checked = config.AI_RETROACTIVE_RELOAD;
+    id('ai-pause-gate').checked = config.AI_PAUSE_GATE;
+    id('ai-pause-margin').value = config.AI_PAUSE_MARGIN_S;
+    id('ai-max-text-len').value = config.AI_MAX_TEXT_LEN;
     id('ai-verdict-cache').checked = config.AI_VERDICT_CACHE;
     void chrome.storage.local.get('AI_API_KEY', (st: any) => {
         let k: string = st.AI_API_KEY || '';
@@ -702,8 +649,10 @@ function update(this: HTMLInputElement) {
     config.AI_WINDOW_SECONDS = safe_int(id('ai-window-seconds').value, 3, 120, DEFAULT_CONFIG.AI_WINDOW_SECONDS);
     config.AI_SUBTITLE_PADDING_SECONDS = safe_int(id('ai-subtitle-padding').value, 0, 30, DEFAULT_CONFIG.AI_SUBTITLE_PADDING_SECONDS);
     config.AI_CONCURRENCY = safe_int(id('ai-concurrency').value, 1, 32, DEFAULT_CONFIG.AI_CONCURRENCY);
-    config.AI_BUDGET_MS = safe_int(id('ai-budget').value, 0, 60000, DEFAULT_CONFIG.AI_BUDGET_MS);
-    config.AI_RETROACTIVE_RELOAD = id('ai-retroactive').checked;
+    config.AI_BUDGET_MS = safe_int(id('ai-budget').value, 5000, 120000, DEFAULT_CONFIG.AI_BUDGET_MS);
+    config.AI_PAUSE_GATE = id('ai-pause-gate').checked;
+    config.AI_PAUSE_MARGIN_S = safe_int(id('ai-pause-margin').value, 5, 120, DEFAULT_CONFIG.AI_PAUSE_MARGIN_S);
+    config.AI_MAX_TEXT_LEN = safe_int(id('ai-max-text-len').value, 10, 200, DEFAULT_CONFIG.AI_MAX_TEXT_LEN);
     config.AI_VERDICT_CACHE = id('ai-verdict-cache').checked;
     void chrome.storage.local.set({AI_API_KEY: id('ai-api-key').value.trim()});
     // 其他

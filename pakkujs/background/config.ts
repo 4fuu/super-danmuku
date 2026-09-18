@@ -91,9 +91,11 @@ async function getChatResponse({ apiKey, baseUrl, model, messages }) {
     // official limits: 250k tokens/s, 1200 req/min (20 req/s); with ~2s per request,
     // 8 concurrent ~= 4-5 req/s steady state, leaving headroom for retries and bursts
     AI_CONCURRENCY: 8,
-    AI_BUDGET_MS: 800, // max time a danmaku response waits for scoring before shipping unjudged parts
-    AI_RETROACTIVE_RELOAD: true, // when background scoring finds new deletions, reload player danmaku (cached, seamless)
-    AI_VERDICT_CACHE: true, // persist per-(cid, window, text) verdicts (score/model/timestamp) for reuse and future sharing
+    AI_BUDGET_MS: 45000, // safety valve: max wait for full scoring of one segment response
+    AI_PAUSE_GATE: true, // pause playback (with overlay) while scoring is not safely ahead
+    AI_PAUSE_MARGIN_S: 20, // resume only when this many seconds of scored video lead the playhead
+    AI_MAX_TEXT_LEN: 40, // danmaku longer than this skip judgement and pass through
+    AI_VERDICT_CACHE: false, // experimental: persist per-(cid, window, text) verdicts; off until the pipeline stabilizes
 
     // 其他
     POPUP_BADGE: 'percent' as ('percent' | 'count' | 'dispval' | 'off'),

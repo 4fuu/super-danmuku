@@ -334,10 +334,216 @@ function schedule_verdict_flush() {
     }, 2000);
 }
 
-function ai_request_reload() {
+// ---- playback gate: pause the video while scoring is not safely ahead ----
+// Danmaku responses now wait for full scoring, so filtering is always complete
+// before the player renders them; the gate keeps playback from outrunning the
+// scorer: it pauses the video (with an overlay) whenever the playhead is about
+// to reach danmaku that are not judged yet, and resumes once a safety margin
+// of scored video length is available ahead.
+let gate_pending = new Set<number>();        // absolute window indices registered but not done
+let gate_done = new Set<number>();           // windows fully scored (or nothing eligible)
+let gate_max_end_s = 0;                      // furthest second covered by any registered window
+let gate_video_id = 0;
+let gate_window_s = 5;
+let gate_enabled = false;
+let gate_margin_s = 20;
+let gate_timer: any = null;
+let gate_no_video_ticks = 0;
+let gate_overlay: HTMLElement | null = null;
+let gate_paused_by_us = false;
+let gate_pausing_now = false;
+let gate_user_paused = false;
+let gate_pause_started = 0;
+let gate_done_seconds = 0;
+let gate_rate_samples: [number, number][] = []; // [ts, cumulative scored seconds]
+const GATE_MAX_PAUSE_MS = 60000;
+const gate_listener_videos = new WeakSet<object>();
+
+function gate_reset_for_video(video_id: number) {
+    if(gate_video_id === video_id)
+        return;
+    gate_video_id = video_id;
+    gate_pending = new Set();
+    gate_done = new Set();
+    gate_max_end_s = 0;
+    gate_done_seconds = 0;
+    gate_rate_samples = [];
+}
+
+function gate_register(w: number, window_s: number, eligible: number) {
+    gate_max_end_s = Math.max(gate_max_end_s, (w + 1) * window_s);
+    if(eligible >= 3)
+        gate_pending.add(w);
+    else
+        gate_window_done(w, window_s);
+}
+
+function gate_window_done(w: number, window_s: number) {
+    if(gate_done.has(w))
+        return;
+    gate_done.add(w);
+    gate_pending.delete(w);
+    gate_done_seconds += window_s;
+    gate_rate_samples.push([Date.now(), gate_done_seconds]);
+    while(gate_rate_samples.length > 200)
+        gate_rate_samples.shift();
+}
+
+function gate_rate(): number { // scored video-seconds per wall-clock second
+    let now = Date.now();
+    while(gate_rate_samples.length >= 2 && now - gate_rate_samples[0][0] > 10000)
+        gate_rate_samples.shift();
+    if(gate_rate_samples.length < 2)
+        return 0;
+    let [t0, s0] = gate_rate_samples[0];
+    let [t1, s1] = gate_rate_samples[gate_rate_samples.length - 1];
+    let dt = (t1 - t0) / 1000;
+    if(dt <= 0.3)
+        return 0;
+    return (s1 - s0) / dt;
+}
+
+function gate_fmt_s(s: number): string {
+    s = Math.max(0, Math.floor(s));
+    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+
+function gate_arm(enabled: boolean, window_s: number, margin_s: number) {
+    gate_enabled = enabled;
+    gate_window_s = window_s;
+    gate_margin_s = margin_s;
+    if(enabled && gate_timer === null)
+        gate_timer = setTimeout(gate_tick, 200);
+}
+
+function gate_shutdown_timer() {
+    if(gate_timer !== null) {
+        clearTimeout(gate_timer);
+        gate_timer = null;
+    }
+}
+
+function gate_tick() {
+    gate_timer = null;
     try {
-        chrome.runtime.sendMessage({type: 'ai_request_reload'}, () => void chrome.runtime.lastError);
-    } catch(e) {}
+        let video: HTMLVideoElement | null = null;
+        try {
+            video = document.querySelector('video');
+        } catch(e) {}
+        if(!video || !gate_enabled || !(document as any).body) {
+            gate_no_video_ticks++;
+            gate_hide_overlay();
+            gate_paused_by_us = false;
+            // stop polling when there is nothing to gate (also lets tests exit)
+            if(gate_no_video_ticks < 10)
+                gate_timer = setTimeout(gate_tick, 1000);
+            return;
+        }
+        gate_no_video_ticks = 0;
+        if(!gate_listener_videos.has(video)) {
+            gate_listener_videos.add(video);
+            video.addEventListener('pause', () => {
+                if(!gate_pausing_now)
+                    gate_user_paused = true; // the user paused; never force-play over them
+            });
+        }
+
+        let now_s = video.currentTime || 0;
+        let lo_w = Math.floor(now_s / gate_window_s);
+        let hi_w = Math.floor((now_s + gate_margin_s) / gate_window_s);
+        let unsafe = false;
+        for(let w = lo_w; w <= hi_w; w++) {
+            if(gate_pending.has(w)) {
+                unsafe = true;
+                break;
+            }
+        }
+        if(!unsafe && gate_max_end_s > 0 && now_s + gate_margin_s > gate_max_end_s + 1)
+            unsafe = true; // approaching the edge of loaded danmaku coverage
+
+        if(unsafe && !video.paused) {
+            gate_user_paused = false;
+            gate_pausing_now = true;
+            try {
+                video.pause();
+            } catch(e) {}
+            gate_pausing_now = false;
+            gate_paused_by_us = true;
+            gate_pause_started = Date.now();
+            gate_show_overlay(video);
+        } else if(gate_paused_by_us && video.paused) {
+            let gave_up = Date.now() - gate_pause_started > GATE_MAX_PAUSE_MS;
+            if(!unsafe || gave_up || gate_user_paused) {
+                gate_hide_overlay();
+                gate_paused_by_us = false;
+                if(!gate_user_paused) {
+                    try {
+                        video.play().catch(()=>{});
+                    } catch(e) {}
+                }
+            } else {
+                gate_update_overlay();
+            }
+        } else if(!unsafe) {
+            gate_hide_overlay();
+            gate_paused_by_us = false;
+        }
+        gate_timer = setTimeout(gate_tick, 500);
+    } catch(e) {
+        console.warn('pakku ai_filter: gate tick error', e);
+        gate_timer = setTimeout(gate_tick, 1000);
+    }
+}
+
+function gate_show_overlay(video: HTMLVideoElement) {
+    if(gate_overlay)
+        return;
+    let style = document.getElementById('pakku-ai-gate-style');
+    if(!style) {
+        style = document.createElement('style');
+        style.id = 'pakku-ai-gate-style';
+        style.textContent = '@keyframes pakku-ai-gate-spin { to { transform: rotate(360deg); } }';
+        (document.head || document.documentElement).appendChild(style);
+    }
+    let host = (video.closest('.bpx-player-container, #bilibili-player, .bpx-player') as HTMLElement) || video.parentElement;
+    if(!host)
+        return;
+    if(getComputedStyle(host).position === 'static')
+        host.style.position = 'relative';
+    let ov = document.createElement('div');
+    ov.id = 'pakku-ai-gate';
+    ov.style.cssText = 'position:absolute;inset:0;z-index:100000;display:flex;align-items:center;justify-content:center;'
+        + 'background:rgba(0,0,0,.5);pointer-events:none;font-family:sans-serif;';
+    ov.innerHTML = '<div style="text-align:center;color:#fff;user-select:none;">'
+        + '<div style="width:44px;height:44px;margin:0 auto 10px;border:4px solid rgba(255,255,255,.25);'
+        + 'border-top-color:#fb7299;border-radius:50%;animation:pakku-ai-gate-spin .9s linear infinite;"></div>'
+        + '<div style="font-size:15px;">AI 正在过滤弹幕</div>'
+        + '<div data-sub style="font-size:12px;opacity:.85;margin-top:6px;"></div></div>';
+    host.appendChild(ov);
+    gate_overlay = ov;
+    gate_update_overlay();
+}
+
+function gate_update_overlay() {
+    if(!gate_overlay)
+        return;
+    let sub = gate_overlay.querySelector('[data-sub]') as HTMLElement | null;
+    if(!sub)
+        return;
+    let rate = gate_rate();
+    let pending_s = gate_pending.size * gate_window_s;
+    let eta = rate > 0.05 ? Math.ceil(pending_s / rate) : null;
+    sub.textContent = `已过滤 ${gate_fmt_s(gate_done_seconds)}${gate_max_end_s ? ' / ' + gate_fmt_s(gate_max_end_s) : ''}`
+        + (eta !== null ? `，预计还需 ${eta} 秒` : '');
+}
+
+function gate_hide_overlay() {
+    if(gate_overlay) {
+        try {
+            gate_overlay.remove();
+        } catch(e) {}
+        gate_overlay = null;
+    }
 }
 
 function jev_ready(): Promise<boolean> {
@@ -458,12 +664,17 @@ export async function ai_filter_chunk(
     const del_thr = typeof config.AI_DELETE_THRESHOLD === 'number' ? config.AI_DELETE_THRESHOLD : 0.6;
     const ratio = typeof config.AI_RATIO === 'number' ? config.AI_RATIO : 0;
     const sub_pad_s = Math.max(0, config.AI_SUBTITLE_PADDING_SECONDS ?? 5);
-    const concurrency = Math.max(1, config.AI_CONCURRENCY || 4);
-    const budget_ms = Math.max(0, config.AI_BUDGET_MS ?? 6000);
+    const concurrency = Math.max(1, config.AI_CONCURRENCY || 8);
+    // responses wait for full scoring (the playback gate covers the wait);
+    // the budget is only a safety valve against pathological hangs
+    const budget_ms = Math.max(0, config.AI_BUDGET_MS ?? 45000);
+    const max_text_len = Math.max(1, config.AI_MAX_TEXT_LEN ?? 40);
+    const pause_gate = config.AI_PAUSE_GATE !== false;
+    const pause_margin_s = Math.max(3, config.AI_PAUSE_MARGIN_S ?? 20);
 
-    // the response never waits longer than the budget: whatever is scored by the
-    // deadline is applied, the rest ships unjudged and keeps scoring in the
-    // background so any re-load (seek, danmaku toggle) hits a warm cache
+    // responses normally wait for full scoring (the playback gate pauses the
+    // video to cover the wait); the budget is only a safety valve against
+    // pathological hangs
     const deadline = Date.now() + budget_ms;
     const t_start = Date.now();
 
@@ -508,9 +719,17 @@ export async function ai_filter_chunk(
     const ratio_deleted = new Set<int>();
     global_sem.update_limit(concurrency);
     let windows_done = 0;
+    let long_skipped_count = 0;
+    gate_reset_for_video(cid || parseInt(hash_str(video_key), 36) || 0);
+    gate_arm(pause_gate, win_ms / 1000, pause_margin_s);
 
     const tasks: Promise<void>[] = [];
-    for(const [w, cands] of [...windows.entries()].sort((a, b) => a[0] - b[0])) { // chronological: near-playhead windows score first
+    for(const [w, cands_all] of [...windows.entries()].sort((a, b) => a[0] - b[0])) { // chronological: near-playhead windows score first
+        // length limit: over-long danmaku skip judgement and pass through
+        const cands = cands_all.filter(c => c.obj.content.length <= max_text_len);
+        long_skipped_count += cands_all.length - cands.length;
+
+        gate_register(w, win_ms / 1000, cands.length);
         if(cands.length < 3)
             continue; // tiny window: not worth a request, keep everything
         ret.ai_windows++;
@@ -536,7 +755,7 @@ export async function ai_filter_chunk(
                     await global_sem.acquire();
                     try {
                         scores = await with_timeout(
-                            score_batch(video_key, w_lo, w_hi, segidx, sub_pad_s, batch, cid, config.AI_VERDICT_CACHE !== false),
+                            score_batch(video_key, w_lo, w_hi, segidx, sub_pad_s, batch, cid, config.AI_VERDICT_CACHE === true),
                             60000,
                             batch.map(c => ({p_worst: 0, score: 2, text: c.obj.content})), // fail-open
                         );
@@ -575,6 +794,7 @@ export async function ai_filter_chunk(
                 }
             }
             windows_done++;
+            gate_window_done(w, win_ms / 1000);
             ai_log_append({
                 type: 'window', ts: Date.now(), segidx, window: w_lo + '~' + w_hi,
                 cands: log_cands.length, del_spam: log_cands.filter(x => x.k === 0).length,
@@ -598,19 +818,10 @@ export async function ai_filter_chunk(
             extra: chunk.extra,
         };
     }
-    const ship_deleted = deleted.size + ratio_deleted.size;
     // background continuation: keep scoring until the segment is fully done, then
-    // (a) persist verdicts and (b) if new deletions landed after shipping, ask the
-    // player to reload danmaku (pakku serves the cached, filtered chunks) so the
-    // on-screen danmaku converge to the filtered set without any visible delay
-    void Promise.all(tasks).then(() => {
-        flush_verdict_store();
-        const total_deleted = deleted.size + ratio_deleted.size;
-        if(total_deleted > ship_deleted && config.AI_RETROACTIVE_RELOAD !== false) {
-            console.info(`pakku ai_filter: seg ${segidx} background pass found ${total_deleted - ship_deleted} more clusters to delete, requesting danmaku reload`);
-            ai_request_reload();
-        }
-    });
+    // persist verdicts (the playback gate already paused the video if this wait
+    // would otherwise outrun playback)
+    void Promise.all(tasks).then(() => flush_verdict_store());
     if(ret.ai_windows) {
         const budget_hit = windows_done < tasks.length;
         console.info(`pakku ai_filter: seg ${segidx} windows=${ret.ai_windows} done=${windows_done}/${tasks.length} budget_hit=${budget_hit} deleted(spam)=${ret.ai_deleted} deleted(ratio)=${ret.ai_deleted_ratio} kept=${ret.chunk.objs.length}/${chunk.objs.length} ship_ms=${Date.now() - t_start}`);
@@ -619,6 +830,7 @@ export async function ai_filter_chunk(
             windows: ret.ai_windows, done: windows_done, budget_hit,
             del_spam: ret.ai_deleted, del_ratio: ret.ai_deleted_ratio,
             kept: ret.chunk.objs.length, total: chunk.objs.length, ship_ms: Date.now() - t_start,
+            long_skipped: long_skipped_count,
         });
     }
     return ret;

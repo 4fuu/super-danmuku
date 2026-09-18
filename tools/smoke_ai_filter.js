@@ -133,6 +133,8 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
         AI_FILTER: true, AI_API_KEY: 'test', AI_DELETE_THRESHOLD: 0.6,
         AI_RATIO: 0.2, AI_WINDOW_SECONDS: 30, AI_MAX_CANDIDATES: 50,
         AI_SUBTITLE_PADDING_SECONDS: 5, AI_CONCURRENCY: 4, AI_BUDGET_MS: 6000,
+        AI_PAUSE_GATE: false, // gate needs a real <video>; exercised manually
+        AI_VERDICT_CACHE: true, // scenario 5 covers the persistence path explicitly
     };
 
     const res = await mod.ai_filter_chunk(chunk, config, 1);
@@ -258,7 +260,7 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     assert(!kept5.has('持久验证中签') && !kept5.has('持久验证抽我'), 'cached verdicts applied instantly on reload');
     assert(kept5.has('新增的无关弹幕甲'), 'new window still scored');
 
-    // ===== scenario 6: retroactive reload after background pass finds new deletions =====
+    // ===== scenario 6: zero budget ships instantly (safety valve fully open) =====
     jev_calls = [];
     reload_requests = [];
     jev_delay_ms = 60;
@@ -274,7 +276,42 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     assert(dt6 < 50, `zero budget ships instantly without waiting (elapsed ${dt6}ms)`);
     assert(res6.chunk.objs.length === objs6.length, 'nothing deleted at ship time (no delay)');
     await sleep(600); // background pass completes
-    assert(reload_requests.length >= 1, `player reload requested after background deletions (got ${reload_requests.length})`);
+    assert(reload_requests.length === 0, 'no player reload requests (mechanism removed)');
+
+    // ===== scenario 7: full scoring before shipping (default behavior) =====
+    jev_calls = [];
+    jev_delay_ms = 100;
+    const objs7 = [];
+    for(let w = 0; w < 3; w++)
+        for(let i = 0; i < 3; i++)
+            objs7.push(mkobj(w * 30000 + i * 1000, `全量判定中${w}-${i}`, 2));
+    const cfg7 = {...config, AI_BUDGET_MS: 60000, AI_CONCURRENCY: 8};
+    const t7 = Date.now();
+    const res7 = await mod.ai_filter_chunk({objs: objs7, extra: {proto_segidx: 8}}, cfg7, 8);
+    const dt7 = Date.now() - t7;
+    console.log(`scenario7: shipped in ${dt7}ms deleted=${res7.ai_deleted} kept=${res7.chunk.objs.length}`);
+    assert(dt7 >= 90, `response waits for full scoring (elapsed ${dt7}ms >= 100ms of API latency)`);
+    assert(res7.chunk.objs.length === 0 && res7.ai_deleted === 18, `everything filtered before shipping (deleted ${res7.ai_deleted})`);
+
+    // ===== scenario 8: length limit skips judgement, passes through =====
+    jev_calls = [];
+    jev_delay_ms = 0;
+    const long_spam = '中'.repeat(60); // spam-looking but over the length limit -> pass through
+    const objs8 = [
+        mkobj(1000, long_spam, 10),
+        mkobj(2000, '字数限中', 3),
+        mkobj(3000, '字数限抽', 3),
+        mkobj(4000, '字数限奖', 3),
+    ];
+    const res8 = await mod.ai_filter_chunk({objs: objs8, extra: {proto_segidx: 9}}, config, 9);
+    const kept8 = new Set(res8.chunk.objs.map(o => o.content));
+    const req_cands = jev_calls.flatMap(c => c.state.candidates.map(x => x.text));
+    console.log(`scenario8: kept=${[...kept8].join('/')} request_cands=${req_cands.length}`);
+    assert(kept8.has(long_spam), 'over-long danmaku passes through without judgement');
+    assert(!kept8.has('字数限中') && !kept8.has('字数限抽') && !kept8.has('字数限奖'), 'short spam still deleted');
+    assert(!req_cands.includes(long_spam), 'long danmaku never sent to the API');
+    const seg_log_8 = ai_log_msgs.filter(m => m.type === 'seg' && m.segidx === 9).pop();
+    assert(seg_log_8 && seg_log_8.long_skipped === 1, 'long_skipped counted in segment log');
 
     console.log('ALL ASSERTIONS PASSED');
 })().catch(e => { console.error(e); process.exit(1); });

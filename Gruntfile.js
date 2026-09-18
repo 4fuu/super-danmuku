@@ -108,6 +108,7 @@ module.exports = function(grunt) {
         'dist/_/generated/view_result.js': 'pakkujs/page/view_result.ts',
         'dist/_/generated/parse_local.js': 'pakkujs/page/parse_local.ts',
         'dist/_/generated/userscript_editor.js': 'pakkujs/page/userscript_editor.ts',
+        'dist/_/generated/ai_log.js': 'pakkujs/page/ai_log.ts',
     };
 
     const TERSER_FILES = Object.fromEntries(Object.keys(ROLLUP_FILES).map(k => [k, [k]]));
