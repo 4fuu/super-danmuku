@@ -104,8 +104,8 @@ function with_timeout<T>(p: Promise<T>, ms: int, fallback: T): Promise<T> {
 }
 
 const WORST_CRITERIA = {
-    true: 'Lottery-begging (asking to win a giveaway), pure repeated characters, off-topic chatter, or other content with no relation to the video. Repetitive text sent by many users purely hoping to be picked in a giveaway counts as spam.',
-    false: 'Related to the video content: on-topic reactions, jokes about what is shown, the uploader\'s memes, questions or opinions about the video subject, or genuine collective reactions to moments in the video.',
+    true: 'Lottery-begging (asking to win a giveaway), pure repeated characters, off-topic chatter, or flooding text unrelated to the video subject. IMPORTANT: repetitive short begging messages sent by many users at once (e.g. 中, 中中中, 抽我, 求中奖) are spam EVEN WHEN the video is currently discussing its own giveaway or the message matches what is on screen right now: flooding the screen with begging is spam regardless of momentary topical relevance. Judge by whether the message is substantive content, not by whether its topic momentarily matches the screen.',
+    false: 'Substantively related to the video content: meaningful on-topic reactions, jokes about what is shown, the uploader\'s memes, questions or opinions about the video subject.',
 };
 
 const QUALITY_LEVELS = [
