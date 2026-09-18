@@ -360,6 +360,43 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     assert(fake_video.play_calls >= 1 && !fake_video.paused, 'playback resumes once the windows are scored');
     global.document.querySelector = () => null; // stop gating the mock video
 
+    // ===== scenario 10: priority scheduling follows the playhead, not task order =====
+    jev_calls = [];
+    jev_delay_ms = 300;
+    const call_order = [];
+    const orig_send = global.chrome.runtime.sendMessage;
+    global.chrome.runtime.sendMessage = (msg, cb) => {
+        if(msg.type === 'jev_call') {
+            call_order.push(msg.body.state.danmaku_window.time_range_seconds);
+        }
+        return orig_send(msg, cb);
+    };
+    // seg A covers 0~6min (playhead sits at 0:29.5 inside it), seg B covers 6~12min;
+    // B is processed FIRST (simulating a later segment finishing combine first).
+    // With concurrency 4 and all of B queued ahead of A, the playhead-adjacent
+    // windows of A must still be among the first requests sent.
+    const cfg10 = {...config, AI_CONCURRENCY: 4, AI_WINDOW_SECONDS: 30, AI_PAUSE_GATE: false};
+    const mk_windows = (base_s, tag) => {
+        const objs = [];
+        for(let t = 0; t < 3600; t += 30) { // 120 windows, 3 cands each
+            objs.push(mkobj((base_s + t + 1) * 1000, tag + '甲', 3));
+            objs.push(mkobj((base_s + t + 6) * 1000, tag + '乙', 3));
+            objs.push(mkobj((base_s + t + 11) * 1000, tag + '丙', 3));
+        }
+        return objs;
+    };
+    const segB = mk_windows(3600, '后');
+    const segA = mk_windows(0, '前');
+    // fire both; B first (its tasks enter the semaphore queue first)
+    void mod.ai_filter_chunk({objs: segB, extra: {proto_segidx: 21}}, cfg10, 21);
+    await mod.ai_filter_chunk({objs: segA, extra: {proto_segidx: 20}}, cfg10, 20);
+    await sleep(200);
+    global.chrome.runtime.sendMessage = orig_send;
+    console.log(`scenario10: first 8 windows sent: ${call_order.slice(0, 8).join(', ')}`);
+    assert(call_order.length >= 8, 'requests were sent');
+    const early = call_order.slice(0, 8).filter(x => x === '0~30' || x === '30~60' || x === '60~90');
+    assert(early.length >= 3, `playhead-adjacent windows are sent early (got [${call_order.slice(0, 8).join(', ')}])`);
+
     console.log('ALL ASSERTIONS PASSED');
     process.exit(0); // the gate's poll timer would otherwise hold the process open
 })().catch(e => { console.error(e); process.exit(1); });

@@ -240,8 +240,11 @@ async function score_batch(video_key: string, window_lo: int, window_hi: int, se
 
 // ---- concurrency limiter for Jev requests (shared across all segments) ----
 class Semaphore {
+    // priority semaphore: when a slot frees, the waiter closest to the current
+    // playhead is woken first, so scoring follows playback progress regardless
+    // of the order tasks were created (segments complete in arbitrary order)
     private active = 0;
-    private waiters: (() => void)[] = [];
+    private waiters: {resolve: ()=>void, prio: ()=>number}[] = [];
     limit: number;
     constructor(limit: number) {
         this.limit = limit;
@@ -249,20 +252,25 @@ class Semaphore {
     private wake_one() {
         // the waker books the slot; the woken acquire() must not increment again
         while(this.waiters.length && this.active < this.limit) {
+            let best = 0;
+            for(let i = 1; i < this.waiters.length; i++)
+                if(this.waiters[i].prio() < this.waiters[best].prio())
+                    best = i; // ties keep the earlier waiter (stable scan from 0)
+            const w = this.waiters.splice(best, 1)[0];
             this.active++;
-            this.waiters.shift()!();
+            w.resolve();
         }
     }
     update_limit(limit: number) {
         this.limit = limit;
         this.wake_one();
     }
-    async acquire(): Promise<void> {
+    async acquire(prio?: ()=>number): Promise<void> {
         if(this.active < this.limit) {
             this.active++;
             return;
         }
-        await new Promise<void>((resolve) => this.waiters.push(resolve));
+        await new Promise<void>((resolve) => this.waiters.push({resolve, prio: prio || (() => 0)}));
     }
     release() {
         this.active--;
@@ -360,9 +368,13 @@ let gate_done_seconds = 0;
 let gate_rate_samples: [number, number][] = []; // [ts, cumulative scored seconds]
 const GATE_MAX_PAUSE_MS = 60000;
 
+// each ai_filter_chunk call is a fresh scoring round: done/pending sets must be
+// rebuilt per round (a re-requested segment re-registers its windows), while
+// cross-round state (video identity, overlay) persists; ship_ready snapshots the
+// round id so a later round's reset cannot un-block an older waiter
+let gate_round_seq = 0;
+
 function gate_reset_for_video(video_id: number) {
-    if(gate_video_id === video_id)
-        return;
     gate_video_id = video_id;
     gate_pending = new Set();
     gate_done = new Set();
@@ -370,6 +382,7 @@ function gate_reset_for_video(video_id: number) {
     gate_done_seconds = 0;
     gate_rate_samples = [];
     gate_gave_up = false;
+    gate_round_seq++;
 }
 
 function gate_register(w: number, window_s: number, eligible: number) {
@@ -380,12 +393,23 @@ function gate_register(w: number, window_s: number, eligible: number) {
         gate_window_done(w, window_s);
 }
 
+function gate_done_set(): Set<number> {
+    return gate_done;
+}
+
 function gate_window_done(w: number, window_s: number) {
     if(gate_done.has(w))
         return;
     gate_done.add(w);
     gate_pending.delete(w);
-    gate_done_seconds += window_s;
+    // "done seconds" counts continuous scored coverage from t=0 (the number the
+    // overlay shows and the rate estimator differentiates); windows completed
+    // out of order only extend the run when they close the gap
+    let run_end = 0;
+    while(gate_done.has(run_end))
+        run_end++;
+    if(run_end * window_s > gate_done_seconds)
+        gate_done_seconds = run_end * window_s;
     gate_rate_samples.push([Date.now(), gate_done_seconds]);
     while(gate_rate_samples.length > 200)
         gate_rate_samples.shift();
@@ -408,6 +432,22 @@ function gate_rate(): number { // scored video-seconds per wall-clock second
 function gate_fmt_s(s: number): string {
     s = Math.max(0, Math.floor(s));
     return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+
+// playhead position used for scoring priority; cached briefly so semaphore
+// wake-ups do not hit the DOM
+let _prio_playhead_s = 0;
+let _prio_playhead_ts = 0;
+function gate_current_playhead_s(): number {
+    let now = Date.now();
+    if(now - _prio_playhead_ts < 400)
+        return _prio_playhead_s;
+    _prio_playhead_ts = now;
+    try {
+        let video = document.querySelector('video');
+        _prio_playhead_s = video ? (video.currentTime || 0) : 0;
+    } catch(e) {}
+    return _prio_playhead_s;
 }
 
 function gate_arm(enabled: boolean, window_s: number, margin_s: number) {
@@ -543,8 +583,14 @@ function gate_update_overlay() {
     if(!sub)
         return;
     let rate = gate_rate();
-    let pending_s = gate_pending.size * gate_window_s;
-    let eta = rate > 0.05 ? Math.ceil(pending_s / rate) : null;
+    // ETA from what is still pending *ahead of the playhead* — with priority
+    // scheduling that is the work that actually blocks release
+    let ph = gate_current_playhead_s();
+    let pending_ahead_s = 0;
+    for(const w of gate_pending)
+        if((w + 1) * gate_window_s > ph)
+            pending_ahead_s += gate_window_s;
+    let eta = rate > 0.05 && pending_ahead_s > 0 ? Math.ceil(pending_ahead_s / rate) : null;
     sub.textContent = `已过滤 ${gate_fmt_s(gate_done_seconds)}${gate_max_end_s ? ' / ' + gate_fmt_s(gate_max_end_s) : ''}`
         + (eta !== null ? `，预计还需 ${eta} 秒` : '');
 }
@@ -677,14 +723,22 @@ export async function ai_filter_chunk(
     const ratio = typeof config.AI_RATIO === 'number' ? config.AI_RATIO : 0;
     const sub_pad_s = Math.max(0, config.AI_SUBTITLE_PADDING_SECONDS ?? 5);
     const concurrency = Math.max(1, config.AI_CONCURRENCY || 8);
-    // responses wait for full scoring (the playback gate covers the wait);
-    // the budget is only a safety valve against pathological hangs
+    // ship when the windows *ahead of the playhead* are scored — the playback
+    // gate guarantees playback cannot reach unscored danmaku, so the rest can
+    // keep scoring in the background (like bilibili's own segment buffering);
+    // the budget stays as a safety valve against pathological hangs
     const budget_ms = Math.max(0, config.AI_BUDGET_MS ?? 45000);
     const max_text_len = Math.max(1, config.AI_MAX_TEXT_LEN ?? 40);
     const pause_gate = config.AI_PAUSE_GATE !== false;
     const pause_margin_s = Math.max(3, config.AI_PAUSE_MARGIN_S ?? 20);
+    // segment responses ship once the playhead-neighbourhood is scored; windows
+    // further ahead finish in the background (gate keeps playback behind them)
+    const ship_margin_s = Math.max(pause_margin_s + 15, 30);
+    const gate_margin_deadzone_s = 60; // windows behind the playhead still gate shipping
 
-    const video_key = String(video_ctx.title || '') + '|' + (chunk.extra.proto_segidx !== undefined ? chunk.extra.proto_segidx : segidx) + '|' + chunk.objs.length;
+    // cache key excludes chunk size: with partial shipping, a re-run sees a
+    // smaller input chunk (earlier deletions applied) and must still hit the cache
+    const video_key = String(video_ctx.title || '') + '|' + (chunk.extra.proto_segidx !== undefined ? chunk.extra.proto_segidx : segidx);
 
     // subtitle context: cid comes from the intercepted danmaku stream, bvid from the page URL
     let cid = 0;
@@ -768,7 +822,9 @@ export async function ai_filter_chunk(
             for(const batch of batches) {
                 let scores: {p_worst: number, score: number, text: string}[];
                 try {
-                    await global_sem.acquire();
+                    // priority: the window closest to the current playhead is scored
+                    // first, so playback never waits behind unrelated later segments
+                    await global_sem.acquire(() => Math.abs(w_lo - gate_current_playhead_s()));
                     try {
                         scores = await with_timeout(
                             score_batch(video_key, w_lo, w_hi, segidx, sub_pad_s, batch, cid, config.AI_VERDICT_CACHE === true),
@@ -821,10 +877,33 @@ export async function ai_filter_chunk(
         })());
     }
 
-    // ship whatever is ready within the budget; remaining windows keep scoring
-    // in the background purely to warm the cache for the next load
+    // ship once the windows near the playhead (within one segment-ish margin)
+    // are scored — anything ahead of that is background work; the playback gate
+    // pauses playback before it could ever reach unscored danmaku anyway
+    const my_round = gate_round_seq;
+    const ship_ready = () => {
+        if(gate_round_seq !== my_round)
+            return true; // superseded by a newer scoring round — stop waiting
+        let ph = gate_current_playhead_s();
+        let lo = Math.max(0, Math.floor((ph - gate_margin_deadzone_s) / (win_ms / 1000)));
+        let hi = Math.floor((ph + ship_margin_s) / (win_ms / 1000));
+        for(const w of windows.keys()) {
+            if(w < lo || w > hi)
+                continue; // behind the playhead or beyond the margin — background work
+            if(!gate_done_set().has(w))
+                return false;
+        }
+        return true;
+    };
     await Promise.race([
-        Promise.all(tasks),
+        (async () => {
+            while(!ship_ready()) {
+                // poll, but wake as soon as any window finishes: segment tasks
+                // complete synchronously on cache hits and the ship check must
+                // not add a fixed latency on top
+                await Promise.race([sleep_ms(250), Promise.all(tasks).catch(()=>{})]);
+            }
+        })(),
         new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, deadline - Date.now()))),
     ]);
 
