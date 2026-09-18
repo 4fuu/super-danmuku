@@ -104,12 +104,12 @@ function with_timeout<T>(p: Promise<T>, ms: int, fallback: T): Promise<T> {
 }
 
 const WORST_CRITERIA = {
-    true: 'Spam for this window: begging for a giveaway (e.g. 中, 抽我, 求中奖) when the video is NOT currently discussing its giveaway in this time window; pure repeated characters with no meaning; off-topic chatter unrelated to the video subject. Judge topical relevance against `danmaku_window.subtitle_in_window` (what is being said on screen right now) and the video metadata.',
-    false: 'Acceptable for this window: reactions that match the current moment, including giveaway-related messages WHILE the video is actually announcing or discussing its own giveaway in this window; jokes about what is shown; the uploader\'s memes; questions or opinions about the video subject.',
+    true: 'Spam for this window: begging for a giveaway or any reward-hoping flooding (in any wording or variant, e.g. 中, 抽我, 求中奖, 必中) when the video is NOT currently discussing its giveaway in this time window; pure repeated characters with no meaning; content-free insults; off-topic chatter unrelated to the video subject or its uploader\'s channel. Judge topical relevance against `danmaku_window.subtitle_in_window` (what is being said on screen right now) and the video metadata.',
+    false: 'Acceptable for this window: reactions that match the current moment, including giveaway-related messages WHILE the video is actually announcing or discussing its own giveaway in this window; jokes about what is shown; questions or opinions about the video subject. The uploader\'s own memes, catchphrases and channel-culture chants (e.g. slogan-like phrases the uploader is known for) are acceptable in ANY window and are never spam, even when they do not match the current moment.',
 };
 
 const QUALITY_LEVELS = [
-    'Spam for this moment of the video: giveaway-begging while the video is not currently discussing its giveaway in this window, pure repeated characters, or off-topic content',
+    'Spam for this moment of the video: giveaway-begging while the video is not currently discussing its giveaway in this window, pure repeated characters, content-free insults, or off-topic content',
     'Generic filler reaction with little content, e.g. single characters, 哈哈哈, 666, 111',
     'Genuine on-topic reaction to the current moment, including timely giveaway hype while the video is announcing its own giveaway',
     'High-value content: informative observation, useful question or opinion about the video subject',
