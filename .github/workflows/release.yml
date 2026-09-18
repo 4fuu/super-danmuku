@@ -1,0 +1,132 @@
+name: Release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      skip: ${{ steps.version.outputs.skip }}
+    steps:
+      - name: Check out source and tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(jq -r .version pakkujs/manifest.json)
+          [[ "$VERSION" =~ ^[0-9]{4}\.[0-9]{3,4}\.[0-9]+$ ]] || {
+            echo "Version must use YYYY.MDD.REVISION (got '$VERSION')" >&2
+            exit 1
+          }
+          EXPECTED_PREFIX=$(TZ=Asia/Shanghai date '+%Y.%-m%d')
+          [[ "$VERSION" == "$EXPECTED_PREFIX".* ]] || {
+            echo "Version $VERSION does not match today's Asia/Shanghai date $EXPECTED_PREFIX" >&2
+            exit 1
+          }
+          TAG="v$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Release $TAG already exists, nothing to do."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Will release $TAG."
+          fi
+
+  release:
+    needs: validate
+    if: needs.validate.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - name: Check out source and tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Build extension packages
+        run: |
+          npm run build:chrome
+          npm run build:firefox
+
+      - name: Smoke test AI filter layer
+        run: node tools/smoke_ai_filter.js
+
+      - name: Stage release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          mv dist/Chrome-super-danmuku.zip "release/super-danmuku-$VERSION-chrome.zip"
+          mv dist/Firefox-super-danmuku.zip "release/super-danmuku-$VERSION-firefox.zip"
+          (cd release && sha256sum super-danmuku-*.zip > SHA256SUMS)
+          cat release/SHA256SUMS
+
+      - name: Write release notes
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            PREV_TAG=$(git describe --tags --abbrev=0 "v$VERSION^" 2>/dev/null || true)
+          else
+            PREV_TAG=$(git describe --tags --abbrev=0 HEAD 2>/dev/null || true)
+          fi
+          if [[ -n "$PREV_TAG" ]]; then
+            RANGE="$PREV_TAG..HEAD"
+            COMPARE_URL="https://github.com/$GITHUB_REPOSITORY/compare/$PREV_TAG...v$VERSION"
+          else
+            RANGE="$(git rev-list --max-parents=0 HEAD)..HEAD"
+            COMPARE_URL="https://github.com/$GITHUB_REPOSITORY/commits/v$VERSION"
+          fi
+          {
+            echo "自动发布，包含以下变更："
+            echo
+            git log --oneline --no-decorate "$RANGE" | sed 's/^/- /'
+            echo
+            echo '## 安装'
+            echo
+            echo "- Chrome/Edge：下载 \`super-danmuku-$VERSION-chrome.zip\` 解压，在 \`chrome://extensions\` 开启开发者模式后「加载已解压的扩展程序」指向解压目录。"
+            echo "- Firefox：下载 \`super-danmuku-$VERSION-firefox.zip\`，在 \`about:debugging\` → 「此 Firefox」→「临时载入附加组件」选择包内 manifest.json；未签名扩展持久安装需经 AMO 签名或使用开发者版。"
+            echo
+            echo "**Full Changelog**: $COMPARE_URL"
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: Create GitHub release
+        run: |
+          set -euo pipefail
+          ARGS=(--repo "$GITHUB_REPOSITORY" --title "super-danmuku $VERSION" --notes-file release-notes.md)
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            gh release create "v$VERSION" release/* --verify-tag "${ARGS[@]}"
+          else
+            gh release create "v$VERSION" release/* --target "$GITHUB_SHA" "${ARGS[@]}"
+          fi

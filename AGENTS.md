@@ -32,6 +32,10 @@ node tools/smoke_ai_filter.js   # AI 过滤层冒烟测试（mock chrome 与 Jev
 5. **无字幕/未登录是正常降级路径**，不是错误：只用标题/简介/标签作为上下文继续工作。
 6. 提交信息用英文；遵循 pakku 原有代码风格（缩进、命名、注释习惯）。
 
+## 发布
+
+推送到 master 即自动发布：`.github/workflows/release.yml` 读取 `pakkujs/manifest.json` 的版本号（`YYYY.MDD.N`，按 Asia/Shanghai 当日日期校验），该版本无对应 tag 时自动构建 Chrome/Firefox 包、跑冒烟测试并创建 release（提交列表即 release note）。发布 = 把 manifest 版本号改成当天新序号并推送，无需其他手动步骤。
+
 ## 开发环境备注
 
 - B 站 API 对海外数据中心 IP 返回 412。`tools/bili_login.py` 与 `tools/fetch_subtitle.py` 支持 `--proxy socks5h://...`，配合 SSH 动态转发（上海机器 `ssh -D 11080`）使用。
