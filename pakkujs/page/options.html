@@ -300,21 +300,13 @@
                     <p>
                         <label for="ai-budget">判定预算：</label>
                         弹幕数据最多等待全量判定
-                        <input id="ai-budget" type="number" min="5000" max="120000" step="1000" style="width: 80px">
-                        毫秒（等待期间视频自动暂停；仅作超时保险，超时才放行未判定弹幕）
+                        <input id="ai-budget" type="number" min="5000" max="600000" step="1000" style="width: 90px">
+                        毫秒（等待期间视频自动暂停；仅作超时保险，超时才放行未判定弹幕，默认 300000）
                     </p>
                     <p>
                         <input id="ai-pause-gate" type="checkbox">
                         <label for="ai-pause-gate">加载门控：</label>
-                        <span>进入视频后立即暂停并显示等待动画，判定进度领先播放进度</span>
-                        <input id="ai-pause-margin" type="number" min="5" max="120" step="5" style="width: 60px">
-                        秒后自动恢复播放（等待期间覆盖用户的播放/暂停操作；超过 60 秒未完成则放行不再拦截）
-                    </p>
-                    <p>
-                        <label for="ai-max-buffer">省流模式：</label>
-                        判定最多领先播放进度
-                        <input id="ai-max-buffer" type="number" min="0" max="3600" step="10" style="width: 70px">
-                        秒（0 为关闭，默认关闭：判定整个视频，上屏弹幕全部经过过滤）。开启后更远的弹幕先不判定、随播放临近再判，可大幅减少请求；代价是判定完成前播放到该段会短暂等待
+                        <span>进入视频后立即暂停并显示等待动画，全部弹幕判定完成后自动恢复播放（等待期间覆盖用户的播放/暂停操作；若长时间无进展则自动放行）</span>
                     </p>
                     <p>
                         <label for="ai-max-text-len">字数上限：</label>

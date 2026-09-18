@@ -90,6 +90,29 @@ class RetryableError extends Error {
 
 const sleep_ms = (ms: int) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+// ---- proactive client-side rate limiting ----
+// official quota: 250k tokens/s, 1200 requests/min (20 req/s). A burst at high
+// concurrency trips 429s, and the resulting exponential backoff stalls far more
+// than pacing ever costs, so request starts are smoothed well under the quota
+// (token bucket). The 429 backoff below stays as a fallback for when the server
+// still disagrees.
+const AI_RATE_PER_S = 15; // request starts per second (75% of the official 20/s)
+const AI_RATE_BURST = 4;  // bucket capacity: a tiny burst, then one start per 1/rate
+let rl_tokens = AI_RATE_BURST;
+let rl_last_refill = Date.now();
+async function rl_acquire(): Promise<void> {
+    while(true) {
+        let now = Date.now();
+        rl_tokens = Math.min(AI_RATE_BURST, rl_tokens + (now - rl_last_refill) * AI_RATE_PER_S / 1000);
+        rl_last_refill = now;
+        if(rl_tokens >= 1) {
+            rl_tokens -= 1;
+            return;
+        }
+        await sleep_ms(Math.ceil((1 - rl_tokens) * 1000 / AI_RATE_PER_S));
+    }
+}
+
 const AI_RETRIES = 5; // exponential backoff: 500ms * 2^n, at least Retry-After when given
 const AI_RETRY_BASE_MS = 500;
 
@@ -202,6 +225,7 @@ async function score_batch(video_key: string, window_lo: int, window_hi: int, se
     for(let attempt = 0; attempt <= AI_RETRIES; attempt++) {
         if(attempt > 0)
             await sleep_ms(Math.max(AI_RETRY_BASE_MS * Math.pow(2, attempt - 1), last_retry_after));
+        await rl_acquire(); // pace every attempt (first tries and backoff retries) under the quota
         try {
             const resp = await call_jev(body);
             answers = resp && resp.answers;
@@ -357,19 +381,20 @@ function schedule_verdict_flush() {
 // ---- playback gate: pause the video while scoring is not safely ahead ----
 // Danmaku responses wait for full scoring, so filtering is always complete
 // before the player renders them; the gate keeps playback from outrunning the
-// scorer. Simplified policy: as soon as gating starts on a video (right when
-// danmaku processing begins, typically at page entry) the video is paused and
-// covered with a loading overlay; playback resumes once a safety margin of
-// scored video length leads the playhead. While gated, user pause/play state
-// is deliberately overridden (resume happens unconditionally); if the wait
-// exceeds GATE_MAX_PAUSE_MS the gate gives up (fail-open) for this video.
+// scorer. Simplified policy (full-judgment mode): as soon as gating starts on
+// a video (right when danmaku processing begins, at page entry) the video is
+// paused and covered with a loading overlay; playback resumes only when ALL
+// windows of ALL loaded segments are scored — the danmaku the player then
+// shows are fully filtered from the first frame. While gated, user pause/play
+// state is deliberately overridden (resume happens unconditionally). If no
+// window completes for GATE_STALL_MS (API broken), the gate gives up
+// (fail-open) and playback proceeds with unjudged danmaku.
 let gate_pending = new Set<number>();        // absolute window indices registered but not done
 let gate_done = new Set<number>();           // windows fully scored (or nothing eligible)
 let gate_max_end_s = 0;                      // furthest second covered by any registered window
 let gate_video_id = 0;
 let gate_window_s = 5;
 let gate_enabled = false;
-let gate_margin_s = 20;
 let gate_timer: any = null;
 let gate_no_video_ticks = 0;
 let gate_overlay: HTMLElement | null = null;
@@ -377,24 +402,21 @@ let gate_paused_by_us = false; // we own the resume for the current pause (user 
 let gate_pause_started = 0;
 let gate_gave_up = false;
 let gate_done_seconds = 0;
+let gate_last_progress_ts = 0; // last time a window completed; stalls trigger fail-open
 let gate_rate_samples: [number, number][] = []; // [ts, cumulative scored seconds]
-const GATE_MAX_PAUSE_MS = 60000;
-
-// each ai_filter_chunk call is a fresh scoring round: done/pending sets must be
-// rebuilt per round (a re-requested segment re-registers its windows), while
-// cross-round state (video identity, overlay) persists; ship_ready snapshots the
-// round id so a later round's reset cannot un-block an older waiter
-let gate_round_seq = 0;
+const GATE_STALL_MS = 45000;
 
 function gate_reset_for_video(video_id: number) {
+    if(gate_video_id === video_id)
+        return; // same video, another segment: windows accumulate across segments
     gate_video_id = video_id;
     gate_pending = new Set();
     gate_done = new Set();
     gate_max_end_s = 0;
     gate_done_seconds = 0;
+    gate_last_progress_ts = Date.now();
     gate_rate_samples = [];
     gate_gave_up = false;
-    gate_round_seq++;
 }
 
 function gate_register(w: number, window_s: number, eligible: number) {
@@ -405,15 +427,15 @@ function gate_register(w: number, window_s: number, eligible: number) {
         gate_window_done(w, window_s);
 }
 
-function gate_done_set(): Set<number> {
-    return gate_done;
-}
-
 function gate_window_done(w: number, window_s: number) {
+    // must run before the idempotence check: a re-registered window (re-request
+    // of the same range) re-adds itself to pending, and the early return below
+    // would otherwise leave it stuck there forever
+    gate_pending.delete(w);
     if(gate_done.has(w))
         return;
     gate_done.add(w);
-    gate_pending.delete(w);
+    gate_last_progress_ts = Date.now();
     // "done seconds" counts continuous scored coverage from t=0 (the number the
     // overlay shows and the rate estimator differentiates); windows completed
     // out of order only extend the run when they close the gap
@@ -462,10 +484,9 @@ function gate_current_playhead_s(): number {
     return _prio_playhead_s;
 }
 
-function gate_arm(enabled: boolean, window_s: number, margin_s: number) {
+function gate_arm(enabled: boolean, window_s: number) {
     gate_enabled = enabled;
     gate_window_s = window_s;
-    gate_margin_s = margin_s;
     if(enabled && gate_timer === null)
         gate_timer = setTimeout(gate_tick, 200);
 }
@@ -503,22 +524,12 @@ function gate_tick() {
             return;
         }
 
-        let now_s = video.currentTime || 0;
-        let lo_w = Math.floor(now_s / gate_window_s);
-        let hi_w = Math.floor((now_s + gate_margin_s) / gate_window_s);
-        // Only windows actually pending around the playhead gate playback. The
-        // playhead reaching the edge of *loaded* danmaku coverage must NOT count
-        // as unsafe: bilibili fetches the next danmaku segment lazily as playback
-        // approaches it, so pausing there deadlocks — the segment only arrives
-        // while playing. When it does arrive, its windows register as pending and
-        // gate normally (the response itself waits for full scoring anyway).
-        let unsafe = false;
-        for(let w = lo_w; w <= hi_w; w++) {
-            if(gate_pending.has(w)) {
-                unsafe = true;
-                break;
-            }
-        }
+        // full-judgment gate: ANY pending window anywhere (any loaded segment)
+        // holds playback — the player's responses already wait for full scoring,
+        // so the gate simply makes the video wait for the very same completion.
+        // This cannot deadlock on lazy segment fetching: bilibili pulls later
+        // segments while playing, but those arrive only after the gate released.
+        let unsafe = gate_pending.size > 0;
 
         if(unsafe) {
             if(!video.paused) {
@@ -532,7 +543,9 @@ function gate_tick() {
                 gate_pause_started = Date.now();
             }
             gate_paused_by_us = true;
-            if(Date.now() - gate_pause_started > GATE_MAX_PAUSE_MS) {
+            if(gate_last_progress_ts && Date.now() - gate_last_progress_ts > GATE_STALL_MS) {
+                // no window completed for a long while (API broken / all stalled):
+                // fail-open, stop gating this video
                 gate_gave_up = true;
                 gate_hide_overlay();
                 gate_paused_by_us = false;
@@ -595,14 +608,9 @@ function gate_update_overlay() {
     if(!sub)
         return;
     let rate = gate_rate();
-    // ETA from what is still pending *ahead of the playhead* — with priority
-    // scheduling that is the work that actually blocks release
-    let ph = gate_current_playhead_s();
-    let pending_ahead_s = 0;
-    for(const w of gate_pending)
-        if((w + 1) * gate_window_s > ph)
-            pending_ahead_s += gate_window_s;
-    let eta = rate > 0.05 && pending_ahead_s > 0 ? Math.ceil(pending_ahead_s / rate) : null;
+    // ETA from ALL pending work: full-judgment gating waits for everything
+    let pending_s = gate_pending.size * gate_window_s;
+    let eta = rate > 0.05 && pending_s > 0 ? Math.ceil(pending_s / rate) : null;
     sub.textContent = `已过滤 ${gate_fmt_s(gate_done_seconds)}${gate_max_end_s ? ' / ' + gate_fmt_s(gate_max_end_s) : ''}`
         + (eta !== null ? `，预计还需 ${eta} 秒` : '');
 }
@@ -717,7 +725,6 @@ export async function ai_filter_chunk(
     chunk: DanmuChunk<DanmuObjectRepresentative>,
     config: LocalizedConfig,
     segidx: int,
-    ship_range_ms: [int, int] | null = null,
 ): Promise<AiFilterResult> {
     const ret: AiFilterResult = {chunk, ai_deleted: 0, ai_deleted_ratio: 0, ai_windows: 0, ai_error: null};
     if(!config.AI_FILTER)
@@ -736,53 +743,13 @@ export async function ai_filter_chunk(
     const ratio = typeof config.AI_RATIO === 'number' ? config.AI_RATIO : 0;
     const sub_pad_s = Math.max(0, config.AI_SUBTITLE_PADDING_SECONDS ?? 5);
     const concurrency = Math.max(1, config.AI_CONCURRENCY || 8);
-    // ship when the windows *ahead of the playhead* are scored — the playback
-    // gate guarantees playback cannot reach unscored danmaku, so the rest can
-    // keep scoring in the background (like bilibili's own segment buffering);
-    // the budget stays as a safety valve against pathological hangs
-    const budget_ms = Math.max(0, config.AI_BUDGET_MS ?? 45000);
+    // full-judgment mode: the response waits until EVERY window of the segment
+    // is scored (the playback gate pauses the video to cover the wait); the
+    // budget is only a safety valve against pathological hangs
+    const budget_ms = Math.max(0, config.AI_BUDGET_MS ?? 300000);
     const max_text_len = Math.max(1, config.AI_MAX_TEXT_LEN ?? 40);
     const pause_gate = config.AI_PAUSE_GATE !== false;
-    const pause_margin_s = Math.max(3, config.AI_PAUSE_MARGIN_S ?? 20);
-    // segment responses ship once the playhead-neighbourhood is scored; windows
-    // further ahead finish in the background (gate keeps playback behind them)
-    const ship_margin_s = Math.max(pause_margin_s + 15, 30);
-    const gate_margin_deadzone_s = 60; // windows behind the playhead still gate shipping
-    // max buffer: windows further ahead of the playhead than this are deferred
-    // until playback nears them (like bilibili's own video buffering); 0 = score
-    // everything to the end of the video. Never below ship_margin, or shipping
-    // would wait on windows the deferral refuses to score.
-    const max_buffer_s = Math.max(0, config.AI_MAX_BUFFER_S ?? 0);
-    // economy mode (max buffer > 0): windows beyond the buffer are shipped to the
-    // player UNJUDGED — bilibili consumes each segment response exactly once and
-    // never re-requests it, so their deletions cannot be applied afterwards.
-    // This trades completeness for tokens/latency and must be opt-in.
-    const defer_ahead_s = max_buffer_s > 0 ? Math.max(max_buffer_s, ship_margin_s) : 0;
-    // range-aligned shipping: the player explicitly asks for [ps, pe) — ship as
-    // soon as that range is scored (it re-requests the next range by itself, so
-    // nothing unfiltered ships and nothing beyond the range blocks). Without a
-    // pending range request, fall back to the playhead-neighbourhood rule.
-    const ship_lo_ms = ship_range_ms ? ship_range_ms[0] : null;
-    const ship_hi_ms = ship_range_ms ? ship_range_ms[1] : null;
-    // economy mode anchors its deferral on the edge of the requested range (the
-    // furthest point the player is currently committed to) instead of the
-    // playhead, so it works identically in background-tab scoring.
-    // Scoring priority anchors on the START of the requested range: the player
-    // is waiting for that range from its beginning, so its head windows must
-    // score first even when the range is long.
-    const range_or_playhead_s = () => {
-        if(ship_hi_ms !== null)
-            return ship_hi_ms / 1000;
-        return gate_current_playhead_s();
-    };
-    const prio_anchor_s = () => {
-        if(ship_lo_ms !== null)
-            return ship_lo_ms / 1000;
-        return gate_current_playhead_s();
-    };
 
-    // cache key excludes chunk size: with partial shipping, a re-run sees a
-    // smaller input chunk (earlier deletions applied) and must still hit the cache
     const video_key = String(video_ctx.title || '') + '|' + (chunk.extra.proto_segidx !== undefined ? chunk.extra.proto_segidx : segidx);
 
     // subtitle context: cid comes from the intercepted danmaku stream, bvid from the page URL
@@ -836,13 +803,9 @@ export async function ai_filter_chunk(
     let windows_done = 0;
     let long_skipped_count = 0;
     gate_reset_for_video(cid || parseInt(hash_str(video_key), 36) || 0);
-    gate_arm(pause_gate, win_ms / 1000, pause_margin_s);
+    gate_arm(pause_gate, win_ms / 1000);
 
     const tasks: Promise<void>[] = [];
-    // windows whose scoring is deferred by the max-buffer limit; a pump below
-    // releases them (by starting their tasks) as the playhead approaches
-    const deferred: {w: int, start: ()=>void}[] = [];
-    const all_tasks: Promise<void>[] = []; // deferred + immediate, for awaiting full completion
     for(const [w, cands_all] of [...windows.entries()].sort((a, b) => a[0] - b[0])) { // chronological: near-playhead windows score first
         // length limit: over-long danmaku skip judgement and pass through
         const cands = cands_all.filter(c => c.obj.content.length <= max_text_len);
@@ -871,10 +834,10 @@ export async function ai_filter_chunk(
             for(const batch of batches) {
                 let scores: {p_worst: number, score: number, text: string}[];
                 try {
-                    // priority: score the window closest to the priority anchor —
-                    // the start of the requested range, or the playhead — so the
-                    // player-facing range is covered in playback order first
-                    await global_sem.acquire(() => Math.abs(w_lo - prio_anchor_s()));
+                    // priority: score the window closest to the playhead first,
+                    // so the video head becomes watchable earliest if the gate
+                    // ever gives up or is disabled
+                    await global_sem.acquire(() => Math.abs(w_lo - gate_current_playhead_s()));
                     try {
                         scores = await with_timeout(
                             score_batch(video_key, w_lo, w_hi, segidx, sub_pad_s, batch, cid, config.AI_VERDICT_CACHE === true),
@@ -919,7 +882,6 @@ export async function ai_filter_chunk(
             }
             windows_done++;
             gate_window_done(w, win_ms / 1000);
-            ship_wake(); // the shipping check re-runs as soon as any window lands
             ai_log_append({
                 type: 'window', ts: Date.now(), segidx, window: w_lo + '~' + w_hi,
                 cands: log_cands.length, del_spam: log_cands.filter(x => x.k === 0).length,
@@ -928,87 +890,16 @@ export async function ai_filter_chunk(
                 detail: log_cands.slice(0, 80),
             });
         };
-        // max buffer: a window far beyond the requested range (or playhead) is
-        // not started yet; the deferred pump starts it when playback nears it
-        if(defer_ahead_s > 0 && w_lo > range_or_playhead_s() + defer_ahead_s) {
-            let started = false;
-            const p = new Promise<void>((resolve) => {
-                deferred.push({w, start: () => { if(!started) { started = true; resolve(); } }});
-            }).then(() => score_window());
-            all_tasks.push(p);
-        } else {
-            const t = score_window();
-            tasks.push(t);
-            all_tasks.push(t);
-        }
+        tasks.push(score_window());
     }
 
-    // deferred pump: as playback advances, release windows entering the buffer
-    // limit so their scoring starts (priority still orders them at the semaphore)
-    if(deferred.length) {
-        let pump_timer: any = setInterval(() => {
-            let ph = gate_current_playhead_s();
-            for(let i = deferred.length - 1; i >= 0; i--) {
-                if(deferred[i].w * (win_ms / 1000) <= ph + defer_ahead_s) {
-                    deferred[i].start();
-                    deferred.splice(i, 1);
-                }
-            }
-            if(!deferred.length)
-                clearInterval(pump_timer);
-        }, 1000);
-    }
-
-    // ship once the windows near the playhead (within one segment-ish margin)
-    // are scored — anything ahead of that is background work; the playback gate
-    // pauses playback before it could ever reach unscored danmaku anyway.
-    // In economy mode (defer_ahead_s > 0) far windows are NOT scored yet, so
-    // their unjudged danmaku ship as-is; the gate delays playback until the
-    // pump releases and scores them as the playhead approaches.
-    const my_round = gate_round_seq;
-    // wake-up channel for the shipping check: any completed window resolves the
-    // current sleeper so it re-evaluates immediately instead of on the poll tick
-    let ship_wake_fn: (()=>void) | null = null;
-    const ship_wake = () => { if(ship_wake_fn) ship_wake_fn(); };
-    const ship_ready = () => {
-        if(gate_round_seq !== my_round)
-            return true; // superseded by a newer scoring round — stop waiting
-        if(ship_hi_ms !== null) { // range request: wait for windows intersecting [ps, pe)
-            let lo = Math.floor(ship_lo_ms! / win_ms);
-            let hi = Math.floor(Math.max(0, ship_hi_ms! - 1) / win_ms);
-            for(const w of windows.keys()) {
-                if(w < lo || w > hi)
-                    continue;
-                if(!gate_done_set().has(w))
-                    return false;
-            }
-            return true;
-        }
-        let ph = gate_current_playhead_s();
-        let lo = Math.max(0, Math.floor((ph - gate_margin_deadzone_s) / (win_ms / 1000)));
-        let hi = Math.floor((ph + ship_margin_s) / (win_ms / 1000));
-        for(const w of windows.keys()) {
-            if(w < lo || w > hi)
-                continue; // behind the playhead or beyond the margin — background work
-            if(!gate_done_set().has(w))
-                return false;
-        }
-        return true;
-    };
+    // full judgment: wait for EVERY window of this segment before returning the
+    // chunk (fail-open on the budget only, against pathological hangs — the
+    // playback gate keeps the video paused for the same wait anyway)
     await Promise.race([
-        (async () => {
-            while(!ship_ready()) {
-                // poll as a backstop, but wake immediately when any window lands
-                await new Promise<void>((resolve) => {
-                    ship_wake_fn = resolve;
-                    setTimeout(resolve, 250);
-                });
-                ship_wake_fn = null;
-            }
-        })(),
+        Promise.all(tasks),
         new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, deadline - Date.now()))),
     ]);
-    ship_wake_fn = null;
 
     if(deleted.size || ratio_deleted.size) {
         ret.chunk = {
@@ -1016,12 +907,12 @@ export async function ai_filter_chunk(
             extra: chunk.extra,
         };
     }
-    // background continuation: keep scoring (immediate + deferred windows) until
-    // the segment is fully done, then persist verdicts
-    void Promise.all(all_tasks).then(() => flush_verdict_store());
+    // verdicts persist once every window (including any budget-fail-open ones
+    // still finishing in the background) has settled
+    void Promise.all(tasks).then(() => flush_verdict_store());
     if(ret.ai_windows) {
-        const budget_hit = windows_done < all_tasks.length;
-        console.info(`pakku ai_filter: seg ${segidx} windows=${ret.ai_windows} done=${windows_done}/${all_tasks.length} budget_hit=${budget_hit} deferred=${deferred.length} deleted(spam)=${ret.ai_deleted} deleted(ratio)=${ret.ai_deleted_ratio} kept=${ret.chunk.objs.length}/${chunk.objs.length} ship_ms=${Date.now() - t_start}`);
+        const budget_hit = windows_done < tasks.length;
+        console.info(`pakku ai_filter: seg ${segidx} windows=${ret.ai_windows} done=${windows_done}/${tasks.length} budget_hit=${budget_hit} deleted(spam)=${ret.ai_deleted} deleted(ratio)=${ret.ai_deleted_ratio} kept=${ret.chunk.objs.length}/${chunk.objs.length} ship_ms=${Date.now() - t_start}`);
         ai_log_append({
             type: 'seg', ts: Date.now(), segidx, title: video_ctx.title || '', bvid,
             windows: ret.ai_windows, done: windows_done, budget_hit,

@@ -136,7 +136,6 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
         AI_PAUSE_GATE: false, // gate needs a real <video>; exercised manually
         AI_VERDICT_CACHE: true, // scenario 5 covers the persistence path explicitly
         AI_MAX_TEXT_LEN: 40, // scenarios 1-7 assume long texts are judged; scenario 8 tests the limit itself
-        AI_MAX_BUFFER_S: 0, // legacy default: score to the end (scenario 11 tests the limit itself)
     };
 
     const res = await mod.ai_filter_chunk(chunk, config, 1);
@@ -163,10 +162,7 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     assert(ai_log_msgs.some(m => m.type === 'window'), 'per-window log records emitted');
     assert(ai_log_msgs.some(m => m.type === 'seg'), 'per-segment log record emitted');
 
-    // rerun -> cache hit (no new jev calls); drain background scoring first —
-    // partial shipping returns before far windows finish, and a rerun racing
-    // them would re-request what background scoring has not cached yet
-    await sleep(400);
+    // rerun -> cache hit (no new jev calls); full judgment already settled every window
     const calls_before = jev_calls.length;
     const res2 = await mod.ai_filter_chunk(chunk, config, 1);
     assert(jev_calls.length === calls_before, 'cache prevents re-scoring');
@@ -212,7 +208,6 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
             objs3.push(mkobj(w * 30000 + i * 1000, `并发测试${w}-${i}`, 1));
     const cfg3 = {...config, AI_CONCURRENCY: 2, AI_BUDGET_MS: 20000};
     const res3 = await mod.ai_filter_chunk({objs: objs3, extra: {proto_segidx: 3}}, cfg3, 3);
-    await sleep(400); // partial shipping returns before far windows finish
     console.log(`scenario3: windows=${res3.ai_windows} calls=${jev_calls.length} max_inflight=${max_inflight}`);
     assert(jev_calls.length === 6, 'all six windows scored');
     assert(max_inflight <= 2, `concurrency limit respected (max_inflight=${max_inflight})`);
@@ -284,7 +279,7 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     await sleep(600); // background pass completes
     assert(reload_requests.length === 0, 'no player reload requests (mechanism removed)');
 
-    // ===== scenario 7: near-playhead windows are fully filtered before shipping =====
+    // ===== scenario 7: full judgment filters the whole segment before shipping =====
     jev_calls = [];
     jev_delay_ms = 100;
     const objs7 = [];
@@ -296,11 +291,9 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     const res7 = await mod.ai_filter_chunk({objs: objs7, extra: {proto_segidx: 8}}, cfg7, 8);
     const dt7 = Date.now() - t7;
     console.log(`scenario7: shipped in ${dt7}ms deleted=${res7.ai_deleted} kept=${res7.chunk.objs.length}`);
-    // playhead 0 => windows 0,1 (0~60s) gate the response and must be filtered in full
-    assert(dt7 >= 90, `response waits for its gating windows (elapsed ${dt7}ms >= 100ms of API latency)`);
-    assert(res7.ai_deleted >= 12 && res7.chunk.objs.length <= 6, `near-playhead windows fully filtered before shipping (deleted ${res7.ai_deleted})`);
-    await sleep(400); // background completes the rest
-    assert(jev_calls.length === 3, `background scoring completes the far window (got ${jev_calls.length})`);
+    assert(dt7 >= 90, `response waits for full judgment (elapsed ${dt7}ms >= 100ms of API latency)`);
+    assert(jev_calls.length === 3, `every window judged before shipping (got ${jev_calls.length})`);
+    assert(res7.ai_deleted === 18 && res7.chunk.objs.length === 0, `all spam filtered before shipping (deleted ${res7.ai_deleted})`);
 
     // ===== scenario 8: length limit skips judgement, passes through =====
     jev_calls = [];
@@ -326,7 +319,7 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     const seg_log_8 = ai_log_msgs.filter(m => m.type === 'seg' && m.segidx === 9).pop();
     assert(seg_log_8 && seg_log_8.long_skipped === 2, 'long_skipped counted in segment log');
 
-    // ===== scenario 9: gate pauses for real pending windows, never for the coverage edge =====
+    // ===== scenario 9: gate pauses while any window is pending, resumes when all are done =====
     jev_calls = [];
     jev_delay_ms = 0;
     const fake_video = {
@@ -342,18 +335,17 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     global.document.createElement = () => ({style: {}, id: '', textContent: '', innerHTML: '', appendChild() {}, remove() {}, querySelector: () => null});
     global.document.head = {appendChild() {}};
 
-    const cfg9 = {...config, AI_PAUSE_GATE: true, AI_PAUSE_MARGIN_S: 5, AI_WINDOW_SECONDS: 5};
-    // chunk covering 0~30s, all windows score instantly; the playhead at 29.5s sits
-    // exactly at the edge of loaded coverage — this must NOT pause (deadlock fix)
+    const cfg9 = {...config, AI_PAUSE_GATE: true, AI_WINDOW_SECONDS: 5};
+    // all windows score instantly: the gate must never have paused for them
     const objs9 = [];
     for(let t = 0; t < 30; t += 5)
         objs9.push(mkobj(t * 1000 + 500, '边缘场景弹幕', 4));
     await mod.ai_filter_chunk({objs: objs9, extra: {proto_segidx: 11}}, cfg9, 11);
     await sleep(1200); // gate ticks run with every window done
-    console.log(`scenario9a: edge-only pause_calls=${fake_video.pause_calls}`);
-    assert(fake_video.pause_calls === 0 && !fake_video.paused, 'coverage edge alone must not pause playback');
+    console.log(`scenario9a: instant-scoring pause_calls=${fake_video.pause_calls}`);
+    assert(fake_video.pause_calls === 0 && !fake_video.paused, 'nothing pending: playback never paused');
 
-    // a chunk whose windows overlap the playhead while scoring is slow: must pause, then resume
+    // a chunk with slow windows: must pause while they are pending, then resume
     jev_delay_ms = 1500;
     const objs9b = [];
     for(let t = 30; t < 45; t += 5) { // 3 candidates per window so they actually register as pending
@@ -364,8 +356,8 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     await mod.ai_filter_chunk({objs: objs9b, extra: {proto_segidx: 12}}, cfg9, 12);
     await sleep(1000); // next tick notices the windows are done and resumes
     console.log(`scenario9b: pause_calls=${fake_video.pause_calls} play_calls=${fake_video.play_calls} paused=${fake_video.paused}`);
-    assert(fake_video.pause_calls >= 1, 'pending windows near the playhead still pause playback');
-    assert(fake_video.play_calls >= 1 && !fake_video.paused, 'playback resumes once the windows are scored');
+    assert(fake_video.pause_calls >= 1, 'pending windows pause playback');
+    assert(fake_video.play_calls >= 1 && !fake_video.paused, 'playback resumes once every window is scored');
     global.document.querySelector = () => null; // stop gating the mock video
 
     // ===== scenario 10: priority scheduling follows the playhead, not task order =====
@@ -386,7 +378,7 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     const cfg10 = {...config, AI_CONCURRENCY: 4, AI_WINDOW_SECONDS: 30, AI_PAUSE_GATE: false};
     const mk_windows = (base_s, tag) => {
         const objs = [];
-        for(let t = 0; t < 3600; t += 30) { // 120 windows, 3 cands each
+        for(let t = 0; t < 360; t += 30) { // 12 windows, 3 cands each
             objs.push(mkobj((base_s + t + 1) * 1000, tag + '甲', 3));
             objs.push(mkobj((base_s + t + 6) * 1000, tag + '乙', 3));
             objs.push(mkobj((base_s + t + 11) * 1000, tag + '丙', 3));
@@ -396,79 +388,36 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     const segB = mk_windows(3600, '后');
     const segA = mk_windows(0, '前');
     // fire both; B first (its tasks enter the semaphore queue first)
-    void mod.ai_filter_chunk({objs: segB, extra: {proto_segidx: 21}}, cfg10, 21);
+    const pB = mod.ai_filter_chunk({objs: segB, extra: {proto_segidx: 21}}, cfg10, 21);
     await mod.ai_filter_chunk({objs: segA, extra: {proto_segidx: 20}}, cfg10, 20);
-    await sleep(200);
+    await pB; // full judgment: both segments settle before the next scenario
+    await sleep(400); // let the last mocked responses land
     global.chrome.runtime.sendMessage = orig_send;
     console.log(`scenario10: first 8 windows sent: ${call_order.slice(0, 8).join(', ')}`);
     assert(call_order.length >= 8, 'requests were sent');
     const early = call_order.slice(0, 8).filter(x => x === '0~30' || x === '30~60' || x === '60~90');
     assert(early.length >= 3, `playhead-adjacent windows are sent early (got [${call_order.slice(0, 8).join(', ')}])`);
 
-    // ===== scenario 11: max buffer defers far-ahead windows =====
+    // ===== scenario 11: proactive rate limiting paces request starts =====
+    // instant responses would let 8 concurrent windows burst all at once; the
+    // token bucket (15/s, burst 4) must smooth the 10 starts to ~400ms instead
     jev_calls = [];
     jev_delay_ms = 0;
-    // playhead at 29.5 (fake video from scenario 9 is gone); set it back
-    const fake_video11 = {
-        currentTime: 5, paused: false,
-        pause() { this.paused = true; }, play() { this.paused = false; return Promise.resolve(); },
-        closest: () => null, parentElement: null,
-    };
-    global.document.querySelector = (sel) => sel === 'video' ? fake_video11 : null;
-    const cfg11 = {...config, AI_WINDOW_SECONDS: 30, AI_PAUSE_GATE: false, AI_MAX_BUFFER_S: 120, AI_BUDGET_MS: 20000};
+    const cfg11 = {...config, AI_WINDOW_SECONDS: 5, AI_PAUSE_GATE: false, AI_CONCURRENCY: 8, AI_BUDGET_MS: 20000};
     const objs11 = [];
-    for(let t = 0; t < 900; t += 30) { // windows at 0,30,...,870 (30 windows)
-        objs11.push(mkobj(t * 1000 + 500, '缓冲窗口弹幕一', 3));
-        objs11.push(mkobj(t * 1000 + 1200, '缓冲窗口弹幕二', 3));
-        objs11.push(mkobj(t * 1000 + 1900, '缓冲窗口弹幕三', 3));
+    for(let w = 0; w < 10; w++) {
+        objs11.push(mkobj(w * 5000 + 500, '限速窗口甲', 3));
+        objs11.push(mkobj(w * 5000 + 1500, '限速窗口乙', 3));
+        objs11.push(mkobj(w * 5000 + 2500, '限速窗口丙', 3));
     }
     const t11 = Date.now();
     const res11 = await mod.ai_filter_chunk({objs: objs11, extra: {proto_segidx: 30}}, cfg11, 30);
-    // scenario 10's background scoring may still be emitting calls into jev_calls;
-    // scope this scenario's requests by segidx 30 only
-    const s11_calls = jev_calls.filter(c => c.state.danmaku_window.segment_index === 30);
-    const sent_lo = s11_calls.map(c => parseInt(c.state.danmaku_window.time_range_seconds));
-    console.log(`scenario11: ship_ms=${Date.now() - t11} calls_at_ship=${s11_calls.length} max_window_seen=${Math.max(...sent_lo)}`);
-    // playhead 5 + 120s defer limit => only windows starting <= 125s may be sent
-    assert(sent_lo.every(x => x <= 125), `far-ahead windows deferred (max sent ${Math.max(...sent_lo)})`);
-    assert(s11_calls.length >= 4, 'near-playhead windows still scored');
-    // playhead advances past 800s: the pump releases the far windows
-    fake_video11.currentTime = 850;
-    await sleep(2600);
-    const sent_lo2 = jev_calls.filter(c => c.state.danmaku_window.segment_index === 30).map(c => parseInt(c.state.danmaku_window.time_range_seconds));
-    console.log(`scenario11 after seek: calls=${sent_lo2.length} max_window=${Math.max(...sent_lo2)}`);
-    assert(Math.max(...sent_lo2) >= 840, 'deferred windows start scoring once playback nears them');
-    global.document.querySelector = () => null;
-
-    // ===== scenario 12: range-aligned shipping (player asks for [ps, pe)) =====
-    await sleep(1500); // let scenario 11's background scoring fully drain the semaphore
-    jev_calls = [];
-    jev_delay_ms = 60;
-    const fake_video12 = {currentTime: 5, paused: false, pause() {this.paused = true;}, play() {this.paused = false; return Promise.resolve();}, closest: () => null, parentElement: null};
-    global.document.querySelector = (sel) => sel === 'video' ? fake_video12 : null;
-    const cfg12 = {...config, AI_WINDOW_SECONDS: 30, AI_PAUSE_GATE: false, AI_MAX_BUFFER_S: 0, AI_CONCURRENCY: 1, AI_BUDGET_MS: 20000};
-    const objs12 = [];
-    for(let t = 0; t < 180; t += 30) { // windows 0..150 (6 windows over 0~180s)
-        objs12.push(mkobj(t * 1000 + 500, '区间窗口甲', 3));
-        objs12.push(mkobj(t * 1000 + 1200, '区间窗口乙', 3));
-        objs12.push(mkobj(t * 1000 + 1900, '区间窗口丙', 3));
-    }
-    const t12 = Date.now();
-    const res12 = await mod.ai_filter_chunk({objs: objs12, extra: {proto_segidx: 40}}, cfg12, 40, [0, 120000]); // player asked 0~120s
-    const ship_ms12 = Date.now() - t12;
-    const judged_at_ship = jev_calls.filter(c => c.state.danmaku_window.segment_index === 40).length;
-    console.log(`scenario12: ship_ms=${ship_ms12} windows_judged_at_ship=${judged_at_ship}`);
-    // only windows intersecting [0s, 120s) gate shipping (4 windows x 60ms = ~240ms);
-    // the whole segment would take ~360ms. The 5th request may start right as the
-    // ship decision lands, so strictly-less-than-6 plus the timing bound is the check.
-    assert(ship_ms12 < 330, `range request does not wait for the whole segment (${ship_ms12}ms)`);
-    assert(judged_at_ship < 6, `range ship does not wait for out-of-range windows (judged ${judged_at_ship})`);
-    // the rest must keep scoring in the background and complete afterwards
-    await sleep(600);
-    const judged_after = jev_calls.filter(c => c.state.danmaku_window.segment_index === 40).length;
-    console.log(`scenario12 after: windows_judged=${judged_after}`);
-    assert(judged_after === 6, `background scoring completes the whole segment (got ${judged_after})`);
-    global.document.querySelector = () => null;
+    const dt11 = Date.now() - t11;
+    console.log(`scenario11: 10 windows judged in ${dt11}ms (paced, not burst)`);
+    assert(res11.ai_windows === 10, 'all windows judged');
+    // 15 req/s with burst 4: 10 starts span at least (10-4)/15 = 400ms
+    assert(dt11 >= 300, `request starts are paced under the rate limit (${dt11}ms for 10 windows)`);
+    assert(dt11 < 2000, `pacing is proportional, not serialized (${dt11}ms)`);
 
     console.log('ALL ASSERTIONS PASSED');
     process.exit(0); // the gate's poll timer would otherwise hold the process open
