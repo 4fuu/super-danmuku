@@ -351,12 +351,14 @@ let gate_timer: any = null;
 let gate_no_video_ticks = 0;
 let gate_overlay: HTMLElement | null = null;
 let gate_paused_by_us = false;
-let gate_pausing_now = false;
+let gate_own_pause_until = 0; // pause events within this window are our own (they fire async)
 let gate_user_paused = false;
 let gate_pause_started = 0;
 let gate_done_seconds = 0;
 let gate_rate_samples: [number, number][] = []; // [ts, cumulative scored seconds]
 const GATE_MAX_PAUSE_MS = 60000;
+const GATE_ENGAGE_DELAY_MS = 600; // let the page, player and other extensions settle before engaging
+let gate_engaged_key = '';
 const gate_listener_videos = new WeakSet<object>();
 
 function gate_reset_for_video(video_id: number) {
@@ -443,8 +445,14 @@ function gate_tick() {
         if(!gate_listener_videos.has(video)) {
             gate_listener_videos.add(video);
             video.addEventListener('pause', () => {
-                if(!gate_pausing_now)
-                    gate_user_paused = true; // the user paused; never force-play over them
+                // our own pause() fires this event asynchronously, after the
+                // synchronous flag would have been reset; ignore events in the
+                // window right after we paused, and only treat later ones as the
+                // user pausing over us
+                if(Date.now() < gate_own_pause_until)
+                    return;
+                if(gate_paused_by_us)
+                    gate_user_paused = true;
             });
         }
 
@@ -463,11 +471,10 @@ function gate_tick() {
 
         if(unsafe && !video.paused) {
             gate_user_paused = false;
-            gate_pausing_now = true;
+            gate_own_pause_until = Date.now() + 500;
             try {
                 video.pause();
             } catch(e) {}
-            gate_pausing_now = false;
             gate_paused_by_us = true;
             gate_pause_started = Date.now();
             gate_show_overlay(video);
@@ -672,12 +679,6 @@ export async function ai_filter_chunk(
     const pause_gate = config.AI_PAUSE_GATE !== false;
     const pause_margin_s = Math.max(3, config.AI_PAUSE_MARGIN_S ?? 20);
 
-    // responses normally wait for full scoring (the playback gate pauses the
-    // video to cover the wait); the budget is only a safety valve against
-    // pathological hangs
-    const deadline = Date.now() + budget_ms;
-    const t_start = Date.now();
-
     const video_key = String(video_ctx.title || '') + '|' + (chunk.extra.proto_segidx !== undefined ? chunk.extra.proto_segidx : segidx) + '|' + chunk.objs.length;
 
     // subtitle context: cid comes from the intercepted danmaku stream, bvid from the page URL
@@ -689,6 +690,21 @@ export async function ai_filter_chunk(
         }
     }
     let bvid = get_bvid_from_url();
+
+    // engage delay (once per video): let the page, the player and other
+    // extensions settle before we touch the danmaku pipeline or the player
+    let engage_key = 'e' + (cid || 0) + '|' + bvid;
+    if(gate_engaged_key !== engage_key) {
+        gate_engaged_key = engage_key;
+        await sleep_ms(GATE_ENGAGE_DELAY_MS);
+    }
+
+    // responses normally wait for full scoring (the playback gate pauses the
+    // video to cover the wait); the budget is only a safety valve against
+    // pathological hangs
+    const deadline = Date.now() + budget_ms;
+    const t_start = Date.now();
+
     if(cid && bvid)
         await ensure_subtitle('cid_' + cid, bvid, cid, Math.min(2500, Math.max(0, deadline - Date.now())));
 
