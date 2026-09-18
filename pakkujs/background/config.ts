@@ -85,8 +85,11 @@ async function getChatResponse({ apiKey, baseUrl, model, messages }) {
     AI_API_KEY: '' as string,
     AI_DELETE_THRESHOLD: 0.6, // p(spam) >= this -> delete regardless of ratio
     AI_RATIO: 0.2, // additionally drop the worst fraction per window (0 to disable), e.g. 0.2 = 1/5
-    AI_WINDOW_SECONDS: 30,
+    AI_WINDOW_SECONDS: 5,
     AI_MAX_CANDIDATES: 50,
+    AI_SUBTITLE_PADDING_SECONDS: 5, // subtitle context: +/- this many seconds around each window
+    AI_CONCURRENCY: 4, // max simultaneous Jev requests
+    AI_BUDGET_MS: 6000, // max time a danmaku response waits for scoring before shipping unjudged parts
 
     // 其他
     POPUP_BADGE: 'percent' as ('percent' | 'count' | 'dispval' | 'off'),

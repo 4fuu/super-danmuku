@@ -133,50 +133,99 @@ async function ver_check() {
         return;
     }
 
-    let res = await fetch(
-        IS_FIREFOX ?
-            'https://img.shields.io/amo/v/pakkujs.json' :
-            'https://img.shields.io/chrome-web-store/v/jklfcpboamajpiikgkbjcnnnnooefbhh.json',
-    );
-    let latest_ver = await res.json();
+    try {
+        let res = await fetch('https://api.github.com/repos/4fuu/super-danmuku/releases/latest');
+        let rel = await res.json();
+        let latest_ver = (rel.tag_name || '').replace(/^v/, '');
 
-    console.log('latest version ', latest_ver);
-    if(latest_ver.value.charAt(0) === 'v') {
-        if(latest_ver.value !== version) {
-            let update_url = 'https://s.xmcp.ltd/pakkujs/?src=update_banner&from_version=' + encodeURIComponent(version);
-            show_note(
-                'pakku_version',
-                `你正在使用 pakku ${version}，${latest_ver.name} 中的最新版是 ${latest_ver.value}。点击此处下载新版本。`,
-                update_url,
-            );
+        console.log('latest version ', latest_ver);
+        if(latest_ver) {
+            if(latest_ver !== version) {
+                let update_url = rel.html_url || 'https://github.com/4fuu/super-danmuku/releases';
+                show_note(
+                    'pakku_version',
+                    `你正在使用 super-danmuku ${version}，最新版是 ${latest_ver}。点击此处查看新版本。`,
+                    update_url,
+                );
 
-            // let the browser to auto update
-            if(chrome.runtime.requestUpdateCheck) {
-                chrome.runtime.requestUpdateCheck((status, details)=>{
-                    console.log('request update check ', status, details);
-                    if(status === 'update_available')
-                        show_note(
-                            'pakku_version',
-                            `你正在使用 pakku ${version}。重启浏览器来自动更新到 ${details?.version || '新版本'}，或者点击此处手动下载。`,
-                            update_url,
-                        );
-                });
+                // let the browser to auto update
+                if(chrome.runtime.requestUpdateCheck) {
+                    chrome.runtime.requestUpdateCheck((status, details)=>{
+                        console.log('request update check ', status, details);
+                        if(status === 'update_available')
+                            show_note(
+                                'pakku_version',
+                                `你正在使用 super-danmuku ${version}。重启浏览器来自动更新到 ${details?.version || '新版本'}，或者点击此处手动下载。`,
+                                update_url,
+                            );
+                    });
+                }
+            } else {
+                id('version-checker').textContent = '✓ 是最新版本';
             }
-        }  else {
-            id('version-checker').textContent = '✓ 是最新版本';
         }
+    } catch(e) {
+        console.warn('version check failed', e);
     }
 }
 void ver_check();
 
-for(let elem of document.querySelectorAll('.donate')) {
-    elem.addEventListener('mouseover', function() {
-        document.body.classList.add('donate-show');
-    });
-    elem.addEventListener('mouseout', function() {
-        document.body.classList.remove('donate-show');
+// ---- AI filter log: view / clear / export ----
+function ai_log_get(): Promise<any[]> {
+    return new Promise((resolve) => {
+        chrome.runtime.sendMessage({type: 'ai_log_get'}, (resp: any) => {
+            if(chrome.runtime.lastError)
+                return resolve([]);
+            resolve((resp && resp.lines) || []);
+        });
     });
 }
+
+function render_ai_log(lines: any[]) {
+    let view = id('ai-log-view') as HTMLDivElement;
+    let summary = id('ai-log-summary');
+    summary.textContent = `${lines.length} 条记录`;
+    if(!lines.length) {
+        view.style.display = 'none';
+        view.textContent = '';
+        return;
+    }
+    view.style.display = 'block';
+    let out: string[] = [];
+    for(let i = lines.length - 1; i >= 0; i--) {
+        let r = lines[i];
+        let ts = new Date(r.ts).toLocaleTimeString();
+        if(r.type === 'seg') {
+            out.push(`[${ts}] 分片${r.segidx} 「${r.title}」 窗口=${r.windows} 完成=${r.done}${r.budget_hit ? '（超预算先行展示）' : ''} 删刷屏=${r.del_spam} 淘汰=${r.del_ratio} 保留=${r.kept}/${r.total} 耗时=${r.ship_ms}ms`);
+        } else if(r.type === 'window') {
+            out.push(`[${ts}] 分片${r.segidx} 窗口${r.window}s 候选=${r.cands} 删=${r.del_spam}+${r.del_ratio} ${r.api_ms}ms${r.error ? ' 错误: ' + r.error : ''}`);
+            for(let c of r.detail || [])
+                out.push(`    ${c.k === 0 ? '✗删' : c.k === 2 ? '↓汰' : '✓留'} p=${c.p.toFixed(2)} q=${c.s} ×${c.n} ${c.t}`);
+        }
+    }
+    view.textContent = out.join('\n');
+}
+
+function ai_log_refresh() {
+    void ai_log_get().then(render_ai_log);
+}
+
+id('ai-log-refresh').addEventListener('click', ai_log_refresh);
+id('ai-log-clear').addEventListener('click', () => {
+    chrome.runtime.sendMessage({type: 'ai_log_clear'}, () => void chrome.runtime.lastError);
+    render_ai_log([]);
+});
+id('ai-log-export').addEventListener('click', () => {
+    void ai_log_get().then((lines) => {
+        let blob = new Blob([JSON.stringify({exported_at: new Date().toISOString(), records: lines}, null, 2)], {type: 'application/json'});
+        let a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'super-danmuku-ai-log.json';
+        a.click();
+        URL.revokeObjectURL(a.href);
+    });
+});
+ai_log_refresh();
 
 function get_perms(): Promise<Permissions> {
     return new Promise((resolve)=>{
@@ -405,6 +454,9 @@ function loadconfig() {
     id('ai-delete-threshold').value = config.AI_DELETE_THRESHOLD;
     id('ai-ratio').value = config.AI_RATIO;
     id('ai-window-seconds').value = config.AI_WINDOW_SECONDS;
+    id('ai-subtitle-padding').value = config.AI_SUBTITLE_PADDING_SECONDS;
+    id('ai-concurrency').value = config.AI_CONCURRENCY;
+    id('ai-budget').value = config.AI_BUDGET_MS;
     void chrome.storage.local.get('AI_API_KEY', (st: any) => {
         let k: string = st.AI_API_KEY || '';
         id('ai-api-key').value = k;
@@ -645,7 +697,10 @@ function update(this: HTMLInputElement) {
     config.AI_FILTER = id('ai-filter').checked;
     config.AI_DELETE_THRESHOLD = safe_float(id('ai-delete-threshold').value, 0, 1, DEFAULT_CONFIG.AI_DELETE_THRESHOLD);
     config.AI_RATIO = safe_float(id('ai-ratio').value, 0, 0.9, DEFAULT_CONFIG.AI_RATIO);
-    config.AI_WINDOW_SECONDS = safe_int(id('ai-window-seconds').value, 10, 120, DEFAULT_CONFIG.AI_WINDOW_SECONDS);
+    config.AI_WINDOW_SECONDS = safe_int(id('ai-window-seconds').value, 3, 120, DEFAULT_CONFIG.AI_WINDOW_SECONDS);
+    config.AI_SUBTITLE_PADDING_SECONDS = safe_int(id('ai-subtitle-padding').value, 0, 30, DEFAULT_CONFIG.AI_SUBTITLE_PADDING_SECONDS);
+    config.AI_CONCURRENCY = safe_int(id('ai-concurrency').value, 1, 16, DEFAULT_CONFIG.AI_CONCURRENCY);
+    config.AI_BUDGET_MS = safe_int(id('ai-budget').value, 1000, 60000, DEFAULT_CONFIG.AI_BUDGET_MS);
     void chrome.storage.local.set({AI_API_KEY: id('ai-api-key').value.trim()});
     // 其他
     config.POPUP_BADGE = id('popup-badge').value;

@@ -223,18 +223,6 @@
             font-size: .8em;
             opacity: .6;
         }
-        #donate-img {
-            display: none;
-            position: fixed;
-            z-index: 999;
-        }
-        .donate-show #donate-img {
-            display: initial;
-            margin: auto;
-            top: 0; bottom: 0; left: 0; right: 0;
-            border: 3px solid #666;
-            pointer-events: none;
-        }
         label[for=show-advanced], .advanced:not(.warning) {
             background-color: rgba(0, 0, 255, .08);
             border-inline: .2em solid transparent;
@@ -294,12 +282,38 @@
                     </p>
                     <p>
                         <label for="ai-window-seconds">时间窗：</label>
-                        <input id="ai-window-seconds" type="number" min="10" max="120" step="5" style="width: 70px">
-                        秒
+                        <input id="ai-window-seconds" type="number" min="3" max="120" step="1" style="width: 70px">
+                        秒（窗口越小判定越快，请求越多）
+                    </p>
+                    <p>
+                        <label for="ai-subtitle-padding">字幕上下文：</label>
+                        窗口前后各附加
+                        <input id="ai-subtitle-padding" type="number" min="0" max="30" step="1" style="width: 70px">
+                        秒的字幕（0 为不附加）
+                    </p>
+                    <p>
+                        <label for="ai-concurrency">并发请求数：</label>
+                        同时最多
+                        <input id="ai-concurrency" type="number" min="1" max="16" step="1" style="width: 70px">
+                        个 AI 请求
+                    </p>
+                    <p>
+                        <label for="ai-budget">展示预算：</label>
+                        弹幕最多等待 AI 判定
+                        <input id="ai-budget" type="number" min="1000" max="60000" step="500" style="width: 80px">
+                        毫秒，超时后先展示未判定的弹幕，判定在后台继续并缓存给下次加载
                     </p>
                     <p class="warning">
                         * 需要在 <a href="https://typesafe.ai" target="_blank">typesafe.ai</a> 申请 API key；失败时自动回退为普通 pakku 过滤，不影响看视频
                     </p>
+                    <p>
+                        <strong>AI 过滤日志：</strong>
+                        <button id="ai-log-refresh">刷新</button>
+                        <button id="ai-log-clear">清空</button>
+                        <button id="ai-log-export">导出 JSON</button>
+                        <span id="ai-log-summary" style="margin-left: 8px"></span>
+                    </p>
+                    <div id="ai-log-view" style="display: none; max-height: 360px; overflow: auto; font-family: monospace; font-size: 12px; line-height: 1.5; border: 1px solid #e0e0e0; padding: 6px; white-space: pre-wrap; word-break: break-all"></div>
                 </td>
                 <td></td>
             </tr>
@@ -678,36 +692,21 @@
                 <td>关于</td>
                 <td>
                     <p>
-                        <strong>xmcp/pakku.js</strong>
-                        使用 <a href="https://github.com/xmcp/pakku.js/blob/master/LICENSE.txt" target="_blank">GPL 3.0 协议</a>
-                        在 <a href="https://github.com/xmcp/pakku.js/" target="_blank"><span class="icon-github"></span> GitHub</a> 开放源代码。
-                    </p>
-                    <p>
-                        <strong>我，开发者，打钱 <span class="icon-coin darkblue"></span></strong>
-                        <a class="donate">→投喂开发者← (｀・ω・´)</a>
+                        <strong>super-danmuku</strong>
+                        使用 <a href="https://github.com/4fuu/super-danmuku/blob/master/LICENSE.txt" target="_blank">GPL 3.0 协议</a>
+                        在 <a href="https://github.com/4fuu/super-danmuku/" target="_blank"><span class="icon-github"></span> GitHub</a> 开放源代码，
+                        基于 <a href="https://github.com/xmcp/pakku.js" target="_blank">xmcp/pakku.js</a> 修改而成。
                     </p>
                     <hr>
                     <p>
-                        <strong>觉得 pakku 很赞？</strong>
-                        请把 pakku ( <code>https://s.xmcp.ltd/pakku</code> ) 安利给更多的小伙伴们 _(:3」∠)_
-                    </p>
-                    <p>
-                        <strong>给个五星好评吧！</strong>
-                        前往
-                        <a id="ask-review-link" href="https://chromewebstore.google.com/detail/pakku%EF%BC%9A%E5%93%94%E5%93%A9%E5%93%94%E5%93%A9%E5%BC%B9%E5%B9%95%E8%BF%87%E6%BB%A4%E5%99%A8/jklfcpboamajpiikgkbjcnnnnooefbhh/reviews" target="_blank">
-                            Chrome Web Store（需要魔法上网）
-                        </a>
-                        打分。
-                    </p>
-                    <p>
                         <strong>想要更多功能？</strong>
                         <span class="advanced"><a href="userscript_editor.html">通过用户脚本来自定义</a> 或者</span>
-                        <a href="https://github.com/xmcp/pakku.js/issues" target="_blank">在 GitHub 上提出</a>
+                        <a href="https://github.com/4fuu/super-danmuku/issues" target="_blank">在 GitHub 上提出</a>
                         。
                     </p>
                     <p>
-                        全部运算都在本地进行，我们不会收集你的B站账号信息和观看历史。
-                        <a href="https://s.xmcp.ltd/pakkujs/privacy_policy.html" target="_blank">Privacy Policy</a>
+                        全部运算都在本地进行；启用 AI 过滤时，会把当前时间窗的弹幕文本与字幕片段发送到你配置的 AI 接口进行判定，不收集B站账号信息和观看历史。
+                        <a href="https://github.com/4fuu/super-danmuku/blob/master/PRIVACY.md" target="_blank">Privacy Policy</a>
                     </p>
                 </td>
                 <td></td>
@@ -718,7 +717,6 @@
     <br><br>
 
     <div id="saved-alert" class="saved-hidden">✓ 已保存</div>
-    <img id="donate-img" src="https://s.xmcp.ltd/pakkujs/donate.png">
 
     <script type="module" src="/generated/options.js"></script>
 </body>

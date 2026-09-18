@@ -104,7 +104,7 @@ function with_timeout<T>(p: Promise<T>, ms: int, fallback: T): Promise<T> {
 }
 
 const WORST_CRITERIA = {
-    true: 'Spam for this window: flooding or begging hoping to be picked for any giveaway, lottery or reward (regardless of exact wording) when the video is NOT currently discussing that giveaway in this time window; pure repeated characters with no meaning; content-free insults or toxic name-calling; advertising, referral or self-promotion unrelated to the video; any other content whose quality is too low or too unrelated to the video subject to be worth showing. Judge topical relevance against `danmaku_window.subtitle_in_window` (what is being said on screen right now) and the video metadata.',
+    true: 'Spam for this window: flooding or begging hoping to be picked for any giveaway, lottery or reward (regardless of exact wording) when the video is NOT currently discussing that giveaway in this time window; pure repeated characters with no meaning; utterances that by themselves carry no meaning or information no matter the topic — mood interjections, acknowledgement noises, isolated function-word fragments — which are not worth showing even when on-topic; content-free insults or toxic name-calling; advertising, referral or self-promotion unrelated to the video; any other content whose quality is too low or too unrelated to the video subject to be worth showing. Judge topical relevance against `danmaku_window.subtitle_in_window` (what is being said on screen right now) and the video metadata.',
     false: 'Acceptable for this window: reactions that match the current moment, including reward-related messages WHILE the video is actually announcing or discussing its own giveaway in this window; jokes about what is shown; questions or opinions about the video subject; the uploader\'s memes, catchphrases and channel-culture chants, which are acceptable in ANY window even when not matching the current moment. When unsure, lean toward acceptable: letting some spam through is better than deleting acceptable content.',
 };
 
@@ -115,7 +115,7 @@ const QUALITY_LEVELS = [
     'High-value content: informative observation, useful question or opinion about the video subject',
 ];
 
-function build_request(video_key: string, window_lo: int, window_hi: int, segidx: int, cands: {text: string, count: int, span_s: number}[]) {
+function build_request(video_key: string, window_lo: int, window_hi: int, segidx: int, sub_pad_s: int, cands: {text: string, count: int, span_s: number}[]) {
     const state: any = {
         video: {
             title: video_ctx.title || '',
@@ -126,7 +126,7 @@ function build_request(video_key: string, window_lo: int, window_hi: int, segidx
         danmaku_window: {
             segment_index: segidx,
             time_range_seconds: window_lo + '~' + window_hi,
-            subtitle_in_window: slice_subtitle(window_lo, window_hi),
+            subtitle_in_window: slice_subtitle(window_lo - sub_pad_s, window_hi + sub_pad_s),
         },
         candidates: cands.map((c, i) => ({i, text: c.text, merged_count: c.count, span_seconds: c.span_s})),
         stats_note: 'merged_count = how many danmaku were merged into this text after de-duplication; span_seconds = how long this text kept appearing inside this window',
@@ -147,7 +147,7 @@ function build_request(video_key: string, window_lo: int, window_hi: int, segidx
     return {state, model: 'jev-latest', questions};
 }
 
-async function score_batch(video_key: string, window_lo: int, window_hi: int, segidx: int, batch: Candidate[]): Promise<{p_worst: number, score: number, text: string}[]> {
+async function score_batch(video_key: string, window_lo: int, window_hi: int, segidx: int, sub_pad_s: int, batch: Candidate[]): Promise<{p_worst: number, score: number, text: string}[]> {
     const cands = batch.map(c => ({
         text: c.obj.content,
         count: c.count,
@@ -159,7 +159,7 @@ async function score_batch(video_key: string, window_lo: int, window_hi: int, se
     if(hit)
         return hit;
 
-    const body = build_request(video_key, window_lo, window_hi, segidx, cands);
+    const body = build_request(video_key, window_lo, window_hi, segidx, sub_pad_s, cands);
     const resp = await call_jev(body);
     const answers = resp && resp.answers;
     if(!answers)
@@ -171,6 +171,34 @@ async function score_batch(video_key: string, window_lo: int, window_hi: int, se
     }));
     cache.set(cache_key, out);
     return out;
+}
+
+// ---- concurrency limiter for Jev requests ----
+class Semaphore {
+    private active = 0;
+    private waiters: (() => void)[] = [];
+    constructor(private limit: number) {}
+    async acquire(): Promise<void> {
+        if(this.limit <= 0 || this.active < this.limit) {
+            this.active++;
+            return;
+        }
+        await new Promise<void>((resolve) => this.waiters.push(resolve));
+        this.active++;
+    }
+    release() {
+        this.active--;
+        let next = this.waiters.shift();
+        if(next)
+            next();
+    }
+}
+
+// ---- diagnostic log (viewable & exportable from the options page) ----
+function ai_log_append(rec: any) {
+    try {
+        chrome.runtime.sendMessage({type: 'ai_log_append', rec}, () => void chrome.runtime.lastError);
+    } catch(e) {}
 }
 
 function jev_ready(): Promise<boolean> {
@@ -236,11 +264,11 @@ function fetch_subtitle(bvid: string, cid: int): Promise<SubtitleLine[] | null> 
     });
 }
 
-async function ensure_subtitle(video_key: string, bvid: string, cid: int) {
+async function ensure_subtitle(video_key: string, bvid: string, cid: int, timeout_ms: int) {
     if(subtitle_video_key === video_key)
         return; // already fetched (or failed) for this video
     subtitle_video_key = video_key;
-    let lines = await with_timeout(fetch_subtitle(bvid, cid), 5000, null);
+    let lines = await with_timeout(fetch_subtitle(bvid, cid), timeout_ms, null);
     subtitle_lines = lines;
     if(lines && lines.length)
         console.debug(`pakku ai_filter: subtitle context loaded, ${lines.length} lines`);
@@ -286,10 +314,19 @@ export async function ai_filter_chunk(
         return ret;
     }
 
-    const win_ms = Math.max(5, config.AI_WINDOW_SECONDS || 30) * 1000;
+    const win_ms = Math.max(1, config.AI_WINDOW_SECONDS || 5) * 1000;
     const max_cand = Math.max(5, config.AI_MAX_CANDIDATES || 50);
     const del_thr = typeof config.AI_DELETE_THRESHOLD === 'number' ? config.AI_DELETE_THRESHOLD : 0.6;
     const ratio = typeof config.AI_RATIO === 'number' ? config.AI_RATIO : 0;
+    const sub_pad_s = Math.max(0, config.AI_SUBTITLE_PADDING_SECONDS ?? 5);
+    const concurrency = Math.max(1, config.AI_CONCURRENCY || 4);
+    const budget_ms = Math.max(0, config.AI_BUDGET_MS ?? 6000);
+
+    // the response never waits longer than the budget: whatever is scored by the
+    // deadline is applied, the rest ships unjudged and keeps scoring in the
+    // background so any re-load (seek, danmaku toggle) hits a warm cache
+    const deadline = Date.now() + budget_ms;
+    const t_start = Date.now();
 
     const video_key = String(video_ctx.title || '') + '|' + (chunk.extra.proto_segidx !== undefined ? chunk.extra.proto_segidx : segidx) + '|' + chunk.objs.length;
 
@@ -303,7 +340,7 @@ export async function ai_filter_chunk(
     }
     let bvid = get_bvid_from_url();
     if(cid && bvid)
-        await ensure_subtitle('cid_' + cid, bvid, cid);
+        await ensure_subtitle('cid_' + cid, bvid, cid, Math.min(2500, Math.max(0, deadline - Date.now())));
 
     // bucket merged clusters into time windows
     const windows = new Map<int, Candidate[]>();
@@ -330,12 +367,17 @@ export async function ai_filter_chunk(
 
     const deleted = new Set<int>();
     const ratio_deleted = new Set<int>();
+    const sem = new Semaphore(concurrency);
+    let windows_done = 0;
 
     const tasks: Promise<void>[] = [];
-    for(const [w, cands] of windows) {
+    for(const [w, cands] of [...windows.entries()].sort((a, b) => a[0] - b[0])) { // chronological: near-playhead windows score first
         if(cands.length < 3)
             continue; // tiny window: not worth a request, keep everything
         ret.ai_windows++;
+
+        const w_lo = Math.floor(w * win_ms / 1000);
+        const w_hi = Math.floor((w + 1) * win_ms / 1000);
 
         // score in batches of max_cand, prioritising high merged count (spam signature)
         const sorted = [...cands].sort((a, b) => b.count - a.count);
@@ -345,16 +387,26 @@ export async function ai_filter_chunk(
 
         tasks.push((async () => {
             const survivors: {c: Candidate, score: number}[] = [];
+            const log_cands: any[] = [];
+            const t_win = Date.now();
+            let win_err: string | null = null;
+
             for(const batch of batches) {
                 let scores: {p_worst: number, score: number, text: string}[];
                 try {
-                    scores = await with_timeout(
-                        score_batch(video_key, Math.floor(w * win_ms / 1000), Math.floor((w + 1) * win_ms / 1000), segidx, batch),
-                        15000,
-                        batch.map(c => ({p_worst: 0, score: 2, text: c.obj.content})), // fail-open
-                    );
+                    await sem.acquire();
+                    try {
+                        scores = await with_timeout(
+                            score_batch(video_key, w_lo, w_hi, segidx, sub_pad_s, batch),
+                            15000,
+                            batch.map(c => ({p_worst: 0, score: 2, text: c.obj.content})), // fail-open
+                        );
+                    } finally {
+                        sem.release();
+                    }
                 } catch(e: any) {
                     console.warn('pakku ai_filter: window batch failed (fail-open)', e);
+                    win_err = e && e.message || String(e);
                     scores = batch.map(c => ({p_worst: 0, score: 2, text: c.obj.content}));
                 }
                 batch.forEach((c, i) => {
@@ -362,8 +414,10 @@ export async function ai_filter_chunk(
                     if(s && s.p_worst >= del_thr) {
                         deleted.add(c.idx);
                         ret.ai_deleted += c.count;
+                        log_cands.push({t: c.obj.content, n: c.count, p: s.p_worst, s: s.score, k: 0});
                     } else {
                         survivors.push({c, score: s ? s.score : 2});
+                        log_cands.push({t: c.obj.content, n: c.count, p: s ? s.p_worst : 0, s: s ? s.score : 2, k: 1});
                     }
                 });
             }
@@ -375,13 +429,29 @@ export async function ai_filter_chunk(
                     for(let i = 0; i < drop_n; i++) {
                         ratio_deleted.add(survivors[i].c.idx);
                         ret.ai_deleted_ratio += survivors[i].c.count;
+                        let lc = log_cands.find(x => x.t === survivors[i].c.obj.content && x.k === 1);
+                        if(lc)
+                            lc.k = 2;
                     }
                 }
             }
+            windows_done++;
+            ai_log_append({
+                type: 'window', ts: Date.now(), segidx, window: w_lo + '~' + w_hi,
+                cands: log_cands.length, del_spam: log_cands.filter(x => x.k === 0).length,
+                del_ratio: log_cands.filter(x => x.k === 2).length,
+                api_ms: Date.now() - t_win, error: win_err,
+                detail: log_cands.slice(0, 80),
+            });
         })());
     }
 
-    await Promise.all(tasks);
+    // ship whatever is ready within the budget; remaining windows keep scoring
+    // in the background purely to warm the cache for the next load
+    await Promise.race([
+        Promise.all(tasks),
+        new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, deadline - Date.now()))),
+    ]);
 
     if(deleted.size || ratio_deleted.size) {
         ret.chunk = {
@@ -389,7 +459,15 @@ export async function ai_filter_chunk(
             extra: chunk.extra,
         };
     }
-    if(ret.ai_windows)
-        console.info(`pakku ai_filter: seg ${segidx} windows=${ret.ai_windows} deleted(spam)=${ret.ai_deleted} deleted(ratio)=${ret.ai_deleted_ratio} kept=${ret.chunk.objs.length}/${chunk.objs.length}`);
+    if(ret.ai_windows) {
+        const budget_hit = windows_done < tasks.length;
+        console.info(`pakku ai_filter: seg ${segidx} windows=${ret.ai_windows} done=${windows_done}/${tasks.length} budget_hit=${budget_hit} deleted(spam)=${ret.ai_deleted} deleted(ratio)=${ret.ai_deleted_ratio} kept=${ret.chunk.objs.length}/${chunk.objs.length} ship_ms=${Date.now() - t_start}`);
+        ai_log_append({
+            type: 'seg', ts: Date.now(), segidx, title: video_ctx.title || '', bvid,
+            windows: ret.ai_windows, done: windows_done, budget_hit,
+            del_spam: ret.ai_deleted, del_ratio: ret.ai_deleted_ratio,
+            kept: ret.chunk.objs.length, total: chunk.objs.length, ship_ms: Date.now() - t_start,
+        });
+    }
     return ret;
 }

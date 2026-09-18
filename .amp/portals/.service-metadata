@@ -1,0 +1,15 @@
+{
+  "adHocServices": {
+    "staticopts": {
+      "name": "staticopts",
+      "command": "python3 -m http.server 8899 --directory /home/user/workspace/super-danmuku/dist/C",
+      "env": {},
+      "portals": [],
+      "health": null,
+      "review": true,
+      "agent": "off",
+      "cwd": "/home/user/workspace/super-danmuku",
+      "port": 30410
+    }
+  }
+}

@@ -7,6 +7,20 @@ import {is_permission_buggy, do_fix_permission} from './permission_check';
 // cid -> subtitle lines [{from, to, content}] (seconds); empty array = video has no subtitle
 const subtitle_cache = new Map<number, any[]>();
 
+// AI filter diagnostic log (bounded, persisted tail; viewable/exportable from the options page).
+// Contains danmaku texts and verdicts only — never the API key.
+const AI_LOG_MAX = 300;
+let ai_log_lines: any[] = [];
+chrome.storage.local.get('ai_log', (st: any) => {
+    ai_log_lines = st.ai_log || [];
+});
+function ai_log_push(rec: any) {
+    ai_log_lines.push(rec);
+    if(ai_log_lines.length > AI_LOG_MAX)
+        ai_log_lines = ai_log_lines.slice(-AI_LOG_MAX);
+    void chrome.storage.local.set({ai_log: ai_log_lines});
+}
+
 async function check_fix_permission() {
     let perms = await chrome.permissions.getAll();
 
@@ -14,8 +28,8 @@ async function check_fix_permission() {
         chrome.notifications.create('//perm_hotfix', {
             type: 'basic',
             iconUrl: chrome.runtime.getURL('/assets/logo.png'),
-            title: '请授予pakku权限',
-            message: 'pakku目前没有修改弹幕所需的权限，无法正常工作。点击修复权限。',
+            title: '请授予 super-danmuku 权限',
+            message: 'super-danmuku 目前没有修改弹幕所需的权限，无法正常工作。点击修复权限。',
 
             // xxx: firefox does not support requireInteraction and buttons
             ...process.env.PAKKU_CHANNEL==='firefox' ? {} : {
@@ -279,6 +293,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         void perform();
         return true;
+    }
+    else if(msg.type==='ai_log_append') {
+        ai_log_push(msg.rec);
+        sendResponse({ok: true});
+    }
+    else if(msg.type==='ai_log_get') {
+        sendResponse({lines: ai_log_lines});
+    }
+    else if(msg.type==='ai_log_clear') {
+        ai_log_lines = [];
+        void chrome.storage.local.remove('ai_log');
+        sendResponse({ok: true});
     }
     else if(msg.type==='jev_ready') {
         let perform = async ()=>{
