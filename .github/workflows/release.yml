@@ -130,3 +130,99 @@ jobs:
           else
             gh release create "v$VERSION" release/* --target "$GITHUB_SHA" "${ARGS[@]}"
           fi
+
+  publish-amo:
+    name: Publish new version to addons.mozilla.org
+    needs: [validate, release]
+    if: needs.validate.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Build Firefox package
+        run: |
+          npm install
+          npm run build:firefox
+
+      - name: Create source archive for AMO review
+        run: git archive --format=zip -o source-code.zip HEAD
+
+      - name: Sign and submit new version to AMO
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.WEB_EXT_API_KEY }}
+          WEB_EXT_API_SECRET: ${{ secrets.WEB_EXT_API_SECRET }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${WEB_EXT_API_KEY:-}" || -z "${WEB_EXT_API_SECRET:-}" ]]; then
+            echo "WEB_EXT_API_KEY / WEB_EXT_API_SECRET not configured; skipping AMO publish."
+            echo "Get them at https://addons.mozilla.org/developers/addon/api/key/ (owner of the AMO listing)."
+            exit 0
+          fi
+          npx --yes web-ext sign \
+            --channel=listed \
+            --no-input \
+            --source-dir dist/F \
+            --artifacts-dir web-ext-artifacts \
+            --upload-source-code source-code.zip \
+            --api-key "$WEB_EXT_API_KEY" \
+            --api-secret "$WEB_EXT_API_SECRET"
+
+  publish-cws:
+    name: Publish new version to Chrome Web Store
+    needs: [validate, release]
+    if: needs.validate.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - name: Download Chrome package from the release
+        run: |
+          set -euo pipefail
+          gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" \
+            -p "super-danmuku-$VERSION-chrome.zip" -O chrome.zip
+
+      - name: Upload and publish via Chrome Web Store API v2
+        env:
+          CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+          CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+          CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+          CWS_EXTENSION_ID: ${{ vars.CWS_EXTENSION_ID }}
+          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${CWS_CLIENT_ID:-}" || -z "${CWS_CLIENT_SECRET:-}" || -z "${CWS_REFRESH_TOKEN:-}" \
+             || -z "${CWS_EXTENSION_ID:-}" || -z "${CWS_PUBLISHER_ID:-}" ]]; then
+            echo "CWS credentials not configured; skipping Chrome Web Store publish."
+            echo "Need secrets CWS_CLIENT_ID / CWS_CLIENT_SECRET / CWS_REFRESH_TOKEN and"
+            echo "variables CWS_EXTENSION_ID / CWS_PUBLISHER_ID. See"
+            echo "https://developer.chrome.com/docs/webstore/using-api"
+            exit 0
+          fi
+          ACCESS_TOKEN=$(curl -sS -X POST https://oauth2.googleapis.com/token \
+            --data-urlencode grant_type=refresh_token \
+            --data-urlencode refresh_token="$CWS_REFRESH_TOKEN" \
+            --data-urlencode client_id="$CWS_CLIENT_ID" \
+            --data-urlencode client_secret="$CWS_CLIENT_SECRET" \
+            | jq -r '.access_token // empty')
+          [[ -n "$ACCESS_TOKEN" ]] || { echo "Failed to exchange refresh token for access token" >&2; exit 1; }
+          BASE="https://chromewebstore.googleapis.com"
+          echo "== CWS upload =="
+          HTTP_CODE=$(curl -sS -o response.json -w '%{http_code}' \
+            -H "Authorization: Bearer $ACCESS_TOKEN" -X POST -T chrome.zip \
+            "$BASE/upload/v2/publishers/$CWS_PUBLISHER_ID/items/$CWS_EXTENSION_ID:upload")
+          cat response.json; echo
+          [[ "$HTTP_CODE" == 2* ]] || { echo "CWS upload failed with HTTP $HTTP_CODE" >&2; exit 1; }
+
+          echo "== CWS publish =="
+          HTTP_CODE=$(curl -sS -o response.json -w '%{http_code}' \
+            -H "Authorization: Bearer $ACCESS_TOKEN" -X POST \
+            "$BASE/v2/publishers/$CWS_PUBLISHER_ID/items/$CWS_EXTENSION_ID:publish")
+          cat response.json; echo
+          [[ "$HTTP_CODE" == 2* ]] || { echo "CWS publish failed with HTTP $HTTP_CODE" >&2; exit 1; }
+

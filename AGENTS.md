@@ -36,6 +36,8 @@ node tools/smoke_ai_filter.js   # AI 过滤层冒烟测试（mock chrome 与 Jev
 
 推送到 master 即自动发布：`.github/workflows/release.yml` 读取 `pakkujs/manifest.json` 的版本号（`YYYY.MDD.N`，按 Asia/Shanghai 当日日期校验），该版本无对应 tag 时自动构建 Chrome/Firefox 包、跑冒烟测试并创建 release（提交列表即 release note）。发布 = 把 manifest 版本号改成当天新序号并推送，无需其他手动步骤。
 
+发布后可自动上架商店（凭证缺失时自动跳过，不阻塞）：AMO 用 `web-ext sign --channel=listed`（secrets `WEB_EXT_API_KEY`/`WEB_EXT_API_SECRET`，附 `git archive` 源码包满足 AMO 源码审查）；Chrome Web Store 用 v2 API（secrets `CWS_CLIENT_ID`/`CWS_CLIENT_SECRET`/`CWS_REFRESH_TOKEN`，variables `CWS_EXTENSION_ID`/`CWS_PUBLISHER_ID`）。两个商店的首次 listing 都必须人工创建（API 不能创建新 item），之后新版本才走自动流程。
+
 ## 开发环境备注
 
 - B 站 API 对海外数据中心 IP 返回 412。`tools/bili_login.py` 与 `tools/fetch_subtitle.py` 支持 `--proxy socks5h://...`，配合 SSH 动态转发（上海机器 `ssh -D 11080`）使用。
