@@ -39,7 +39,7 @@ function firefox_manifest(src, path) {
 
         obj.browser_specific_settings = {
             gecko: {
-                id: '{646d57f4-d65c-4f0d-8e80-5800b92cfdaa}',
+                id: '{9da0e0aa-0d7c-4695-8969-92be691a0236}',
                 strict_min_version: '113.0',
                 // version requirement due to:
                 // - https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/declarativeNetRequest
@@ -266,7 +266,7 @@ module.exports = function(grunt) {
                     },
                 ],
                 options: {
-                    archive: 'dist/Chrome-pakku.zip',
+                    archive: 'dist/Chrome-super-danmuku.zip',
                 },
             },
             edg: {
@@ -278,7 +278,7 @@ module.exports = function(grunt) {
                     },
                 ],
                 options: {
-                    archive: 'dist/Edg-pakku.zip',
+                    archive: 'dist/Edg-super-danmuku.zip',
                 },
             },
             firefox: {
@@ -290,7 +290,7 @@ module.exports = function(grunt) {
                     },
                 ],
                 options: {
-                    archive: 'dist/Firefox-pakku.zip',
+                    archive: 'dist/Firefox-super-danmuku.zip',
                 },
             },
             src: {

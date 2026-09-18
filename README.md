@@ -28,6 +28,7 @@ B 站弹幕过滤器，基于 [xmcp/pakku.js](https://github.com/xmcp/pakku.js)�
 ```bash
 npm install
 npm run build:chrome   # 产物在 dist/C，可在 chrome://extensions 以"加载已解压的扩展程序"安装
+npm run build:firefox  # 产物在 dist/F，可在 about:debugging 以"临时载入附加组件"安装
 ```
 
 需要 API key：在 [typesafe.ai](https://typesafe.ai) 申请，填入本扩展设置页。
