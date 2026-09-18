@@ -21,6 +21,9 @@ let jev_calls = [];
 let jev_delay_ms = 0; // adjustable per scenario
 let inflight = 0, max_inflight = 0;
 let ai_log_msgs = [];
+let reload_requests = [];
+let retry_fails_remaining = {}; // window range -> remaining 429s to inject
+const storage_data = {};
 global.chrome = {
     runtime: {
         lastError: null,
@@ -28,6 +31,7 @@ global.chrome = {
             if(msg.type === 'jev_ready') return cb({ready: true});
             if(msg.type === 'ai_log_append') { ai_log_msgs.push(msg.rec); return cb({ok: true}); }
             if(msg.type === 'ai_log_get') return cb({lines: ai_log_msgs});
+            if(msg.type === 'ai_request_reload') { reload_requests.push(Date.now()); return cb({ok: true}); }
             if(msg.type === 'bili_subtitle') {
                 return cb({error: null, lines: [
                     {from: 0, to: 12, content: '大家好今天我们来看iPhone 18 Pro和Duo'},
@@ -42,6 +46,16 @@ global.chrome = {
                 max_inflight = Math.max(max_inflight, inflight);
                 setTimeout(() => {
                     inflight--;
+                    // inject 429s for windows whose first candidate is marked 限流
+                    const first = msg.body.state.candidates[0];
+                    if(first && first.text.startsWith('限流')) {
+                        const wkey = msg.body.state.danmaku_window.time_range_seconds;
+                        retry_fails_remaining[wkey] = retry_fails_remaining[wkey] || 0;
+                        if(retry_fails_remaining[wkey] < 2) {
+                            retry_fails_remaining[wkey]++;
+                            return cb({error: 'Jev API busy (429)', retryable: true, retry_after_ms: 0});
+                        }
+                    }
                     const state = msg.body.state;
                     const answers = {};
                     state.candidates.forEach((c, i) => {
@@ -55,6 +69,22 @@ global.chrome = {
             } else {
                 cb(null);
             }
+        },
+    },
+    storage: {
+        local: {
+            get: (k, cb) => {
+                const r = {};
+                if(typeof k === 'string')
+                    r[k] = storage_data[k];
+                else if(Array.isArray(k))
+                    k.forEach(x => r[x] = storage_data[x]);
+                else
+                    Object.assign(r, storage_data);
+                setTimeout(() => cb(r), 0);
+            },
+            set: (obj, cb) => { Object.assign(storage_data, obj); if(cb) cb(); },
+            remove: (k, cb) => { delete storage_data[k]; if(cb) cb(); },
         },
     },
 };
@@ -178,6 +208,73 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     console.log(`scenario3: windows=${res3.ai_windows} calls=${jev_calls.length} max_inflight=${max_inflight}`);
     assert(jev_calls.length === 6, 'all six windows scored');
     assert(max_inflight <= 2, `concurrency limit respected (max_inflight=${max_inflight})`);
+
+    // ===== scenario 4: 429 exponential backoff retries, then success =====
+    jev_calls = [];
+    jev_delay_ms = 0;
+    const objs4 = [
+        mkobj(1000, '限流测试中奖', 5),
+        mkobj(2000, '限流测试抽奖', 5),
+        mkobj(3000, '限流测试必中', 5),
+    ];
+    const cfg4 = {...config, AI_BUDGET_MS: 6000};
+    const t4 = Date.now();
+    const res4 = await mod.ai_filter_chunk({objs: objs4, extra: {proto_segidx: 4}}, cfg4, 4);
+    const dt4 = Date.now() - t4;
+    console.log(`scenario4: calls=${jev_calls.length} elapsed=${dt4}ms kept=${res4.chunk.objs.length}`);
+    assert(jev_calls.length === 3, 'window retried twice then succeeded (3 attempts)');
+    assert(dt4 >= 1400, `backoff delays applied (500+1000ms, elapsed ${dt4}ms)`);
+    assert(res4.chunk.objs.length === 0, 'spam deleted after successful retry');
+
+    // ===== scenario 5: persistent verdict cache reused across loads =====
+    jev_calls = [];
+    // 5a: first visit scores and persists verdicts
+    const objs5a = [
+        mkobj(1000, '持久验证中签', 3),
+        mkobj(2000, '持久验证抽我', 3),
+        mkobj(3000, '持久验证许愿', 3),
+    ];
+    await mod.ai_filter_chunk({objs: objs5a, extra: {proto_segidx: 5}}, config, 5);
+    assert(jev_calls.length === 1, 'first visit makes one request');
+    assert(storage_data['ai_verdicts'] && storage_data['ai_verdicts']['41969257534|0|持久验证中签'], 'verdict persisted to storage with score/model/time');
+    const persisted = storage_data['ai_verdicts']['41969257534|0|持久验证中签'];
+    assert(typeof persisted.p === 'number' && typeof persisted.s === 'number' && persisted.m === 'jev-latest' && typeof persisted.t === 'number', 'verdict entry has score, model, timestamp');
+    // 5b: reload with a different chunk shape (L1 misses) but same texts/windows -> verdict reuse, zero requests
+    jev_calls = [];
+    const t5 = Date.now();
+    const objs5b = [
+        mkobj(1000, '持久验证中签', 3),
+        mkobj(2000, '持久验证抽我', 3),
+        mkobj(3000, '持久验证许愿', 3),
+        // extra objects in a later window change the chunk shape (fresh L1 cache key)
+        mkobj(101000, '新增的无关弹幕甲', 1),
+        mkobj(102000, '新增的无关弹幕乙', 1),
+        mkobj(103000, '新增的无关弹幕丙', 1),
+    ];
+    const res5 = await mod.ai_filter_chunk({objs: objs5b, extra: {proto_segidx: 6}}, config, 6);
+    console.log(`scenario5: reload calls=${jev_calls.length} elapsed=${Date.now() - t5}ms kept=${res5.chunk.objs.length}`);
+    assert(jev_calls.length === 1, 'verdict cache: only the unseen window requests (1 call)');
+    const kept5 = new Set(res5.chunk.objs.map(o => o.content));
+    assert(!kept5.has('持久验证中签') && !kept5.has('持久验证抽我'), 'cached verdicts applied instantly on reload');
+    assert(kept5.has('新增的无关弹幕甲'), 'new window still scored');
+
+    // ===== scenario 6: retroactive reload after background pass finds new deletions =====
+    jev_calls = [];
+    reload_requests = [];
+    jev_delay_ms = 60;
+    const objs6 = [];
+    for(let w = 0; w < 2; w++)
+        for(let i = 0; i < 3; i++)
+            objs6.push(mkobj(w * 30000 + i * 1000, `追溯屏蔽中${w}-${i}`, 4));
+    const cfg6 = {...config, AI_BUDGET_MS: 0, AI_CONCURRENCY: 1}; // ship instantly, score later
+    const t6 = Date.now();
+    const res6 = await mod.ai_filter_chunk({objs: objs6, extra: {proto_segidx: 7}}, cfg6, 7);
+    const dt6 = Date.now() - t6;
+    console.log(`scenario6: shipped in ${dt6}ms unfiltered=${res6.chunk.objs.length}`);
+    assert(dt6 < 50, `zero budget ships instantly without waiting (elapsed ${dt6}ms)`);
+    assert(res6.chunk.objs.length === objs6.length, 'nothing deleted at ship time (no delay)');
+    await sleep(600); // background pass completes
+    assert(reload_requests.length >= 1, `player reload requested after background deletions (got ${reload_requests.length})`);
 
     console.log('ALL ASSERTIONS PASSED');
 })().catch(e => { console.error(e); process.exit(1); });

@@ -68,8 +68,12 @@ function call_jev(body: any): Promise<any> {
             chrome.runtime.sendMessage({type: 'jev_call', body}, (resp: any) => {
                 if(chrome.runtime.lastError)
                     return reject(new Error(chrome.runtime.lastError.message || 'runtime error'));
-                if(!resp || resp.error)
+                if(!resp || resp.error) {
+                    // rate-limited / overloaded: callers retry with exponential backoff
+                    if(resp && resp.retryable)
+                        return reject(new RetryableError(resp.retry_after_ms || 0));
                     return reject(new Error((resp && resp.error) || 'jev_call failed'));
+                }
                 resolve(resp.data);
             });
         } catch(e) {
@@ -77,6 +81,17 @@ function call_jev(body: any): Promise<any> {
         }
     });
 }
+
+class RetryableError extends Error {
+    constructor(public retry_after_ms: int) {
+        super('retryable (rate limited)');
+    }
+}
+
+const sleep_ms = (ms: int) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+const AI_RETRIES = 5; // exponential backoff: 500ms * 2^n, at least Retry-After when given
+const AI_RETRY_BASE_MS = 500;
 
 function with_timeout<T>(p: Promise<T>, ms: int, fallback: T): Promise<T> {
     return new Promise((resolve) => {
@@ -147,7 +162,7 @@ function build_request(video_key: string, window_lo: int, window_hi: int, segidx
     return {state, model: 'jev-latest', questions};
 }
 
-async function score_batch(video_key: string, window_lo: int, window_hi: int, segidx: int, sub_pad_s: int, batch: Candidate[]): Promise<{p_worst: number, score: number, text: string}[]> {
+async function score_batch(video_key: string, window_lo: int, window_hi: int, segidx: int, sub_pad_s: int, batch: Candidate[], cid: int, use_verdicts: boolean): Promise<{p_worst: number, score: number, text: string}[]> {
     const cands = batch.map(c => ({
         text: c.obj.content,
         count: c.count,
@@ -159,45 +174,169 @@ async function score_batch(video_key: string, window_lo: int, window_hi: int, se
     if(hit)
         return hit;
 
-    const body = build_request(video_key, window_lo, window_hi, segidx, sub_pad_s, cands);
-    const resp = await call_jev(body);
-    const answers = resp && resp.answers;
+    // L2: persistent verdicts (same model only), reused without any request
+    let out: {p_worst: number, score: number, text: string}[] = batch.map(() => ({p_worst: 0, score: 2, text: ''}));
+    let miss_idx: int[] = batch.map((_, i) => i);
+    if(use_verdicts && cid) {
+        let store = await load_verdict_store();
+        miss_idx = [];
+        batch.forEach((c, i) => {
+            let v = store[verdict_key(cid, window_lo, c.obj.content)];
+            if(v && v.m === AI_MODEL)
+                out[i] = {p_worst: v.p, score: v.s, text: c.obj.content};
+            else
+                miss_idx.push(i);
+        });
+        if(!miss_idx.length) {
+            cache.set(cache_key, out);
+            return out;
+        }
+    }
+
+    const sub = miss_idx.map(i => batch[i]);
+    const sub_cands = miss_idx.map(i => cands[i]);
+    const body = build_request(video_key, window_lo, window_hi, segidx, sub_pad_s, sub_cands);
+
+    let answers: any = null;
+    let last_retry_after = 0;
+    for(let attempt = 0; attempt <= AI_RETRIES; attempt++) {
+        if(attempt > 0)
+            await sleep_ms(Math.max(AI_RETRY_BASE_MS * Math.pow(2, attempt - 1), last_retry_after));
+        try {
+            const resp = await call_jev(body);
+            answers = resp && resp.answers;
+            if(!answers)
+                throw new Error('jev: no answers');
+            break;
+        } catch(e: any) {
+            if(e instanceof RetryableError && attempt < AI_RETRIES) {
+                last_retry_after = e.retry_after_ms;
+                console.warn(`pakku ai_filter: rate limited, backoff retry ${attempt + 1}/${AI_RETRIES}`);
+                continue;
+            }
+            throw e;
+        }
+    }
     if(!answers)
         throw new Error('jev: no answers');
-    const out = batch.map((_, i) => ({
-        p_worst: answers['worst_' + i] ? answers['worst_' + i].noul : 0,
-        score: answers['qual_' + i] ? answers['qual_' + i].score : 2,
-        text: cands[i].text,
-    }));
+
+    let store: {[k: string]: any} | null = null;
+    if(use_verdicts && cid)
+        store = await load_verdict_store();
+    sub.forEach((c, j) => {
+        const p_worst = answers['worst_' + j] ? answers['worst_' + j].noul : 0;
+        const score = answers['qual_' + j] ? answers['qual_' + j].score : 2;
+        out[miss_idx[j]] = {p_worst, score, text: c.obj.content};
+        if(store !== null) {
+            store[verdict_key(cid, window_lo, c.obj.content)] = {
+                p: p_worst, s: score, m: AI_MODEL, t: Date.now(), b: get_bvid_from_url(),
+            };
+            schedule_verdict_flush();
+        }
+    });
     cache.set(cache_key, out);
     return out;
 }
 
-// ---- concurrency limiter for Jev requests ----
+// ---- concurrency limiter for Jev requests (shared across all segments) ----
 class Semaphore {
     private active = 0;
     private waiters: (() => void)[] = [];
-    constructor(private limit: number) {}
+    limit: number;
+    constructor(limit: number) {
+        this.limit = limit;
+    }
+    private wake_one() {
+        // the waker books the slot; the woken acquire() must not increment again
+        while(this.waiters.length && this.active < this.limit) {
+            this.active++;
+            this.waiters.shift()!();
+        }
+    }
+    update_limit(limit: number) {
+        this.limit = limit;
+        this.wake_one();
+    }
     async acquire(): Promise<void> {
-        if(this.limit <= 0 || this.active < this.limit) {
+        if(this.active < this.limit) {
             this.active++;
             return;
         }
         await new Promise<void>((resolve) => this.waiters.push(resolve));
-        this.active++;
     }
     release() {
         this.active--;
-        let next = this.waiters.shift();
-        if(next)
-            next();
+        this.wake_one();
     }
 }
+const global_sem = new Semaphore(8);
 
 // ---- diagnostic log (viewable & exportable from the options page) ----
 function ai_log_append(rec: any) {
     try {
         chrome.runtime.sendMessage({type: 'ai_log_append', rec}, () => void chrome.runtime.lastError);
+    } catch(e) {}
+}
+
+// ---- persistent verdict cache (L2, survives reloads; designed for later sharing) ----
+// entry: {p: p_worst, s: score, m: model, t: timestamp_ms, b: bvid}; key: cid|window_lo|text
+const VERDICT_STORE_KEY = 'ai_verdicts';
+const VERDICT_STORE_CAP = 20000;
+const AI_MODEL = 'jev-latest';
+let verdict_store: {[k: string]: any} | null = null; // null = not loaded yet
+let verdict_dirty = false;
+let verdict_flush_timer: any = null;
+
+function load_verdict_store(): Promise<{[k: string]: any}> {
+    if(verdict_store)
+        return Promise.resolve(verdict_store);
+    return new Promise((resolve) => {
+        try {
+            chrome.storage.local.get(VERDICT_STORE_KEY, (st: any) => {
+                verdict_store = (st && st[VERDICT_STORE_KEY]) || {};
+                resolve(verdict_store!);
+            });
+        } catch(e) {
+            verdict_store = {};
+            resolve(verdict_store);
+        }
+    });
+}
+
+function verdict_key(cid: int, win_lo: int, text: string): string {
+    return cid + '|' + win_lo + '|' + text;
+}
+
+function flush_verdict_store() {
+    if(!verdict_dirty || !verdict_store)
+        return;
+    verdict_dirty = false;
+    try {
+        void chrome.storage.local.set({[VERDICT_STORE_KEY]: verdict_store});
+    } catch(e) {}
+}
+
+function schedule_verdict_flush() {
+    verdict_dirty = true;
+    if(verdict_flush_timer !== null)
+        return;
+    verdict_flush_timer = setTimeout(() => {
+        verdict_flush_timer = null;
+        if(verdict_store) { // prune oldest 20% when over cap
+            let ks = Object.keys(verdict_store);
+            if(ks.length > VERDICT_STORE_CAP) {
+                let entries = ks.map(k => [k, verdict_store![k].t || 0] as [string, int]).sort((a, b) => a[1] - b[1]);
+                for(let i = 0; i < Math.floor(entries.length * 0.2); i++)
+                    delete verdict_store[entries[i][0]];
+            }
+        }
+        flush_verdict_store();
+    }, 2000);
+}
+
+function ai_request_reload() {
+    try {
+        chrome.runtime.sendMessage({type: 'ai_request_reload'}, () => void chrome.runtime.lastError);
     } catch(e) {}
 }
 
@@ -367,7 +506,7 @@ export async function ai_filter_chunk(
 
     const deleted = new Set<int>();
     const ratio_deleted = new Set<int>();
-    const sem = new Semaphore(concurrency);
+    global_sem.update_limit(concurrency);
     let windows_done = 0;
 
     const tasks: Promise<void>[] = [];
@@ -394,15 +533,15 @@ export async function ai_filter_chunk(
             for(const batch of batches) {
                 let scores: {p_worst: number, score: number, text: string}[];
                 try {
-                    await sem.acquire();
+                    await global_sem.acquire();
                     try {
                         scores = await with_timeout(
-                            score_batch(video_key, w_lo, w_hi, segidx, sub_pad_s, batch),
-                            15000,
+                            score_batch(video_key, w_lo, w_hi, segidx, sub_pad_s, batch, cid, config.AI_VERDICT_CACHE !== false),
+                            60000,
                             batch.map(c => ({p_worst: 0, score: 2, text: c.obj.content})), // fail-open
                         );
                     } finally {
-                        sem.release();
+                        global_sem.release();
                     }
                 } catch(e: any) {
                     console.warn('pakku ai_filter: window batch failed (fail-open)', e);
@@ -459,6 +598,19 @@ export async function ai_filter_chunk(
             extra: chunk.extra,
         };
     }
+    const ship_deleted = deleted.size + ratio_deleted.size;
+    // background continuation: keep scoring until the segment is fully done, then
+    // (a) persist verdicts and (b) if new deletions landed after shipping, ask the
+    // player to reload danmaku (pakku serves the cached, filtered chunks) so the
+    // on-screen danmaku converge to the filtered set without any visible delay
+    void Promise.all(tasks).then(() => {
+        flush_verdict_store();
+        const total_deleted = deleted.size + ratio_deleted.size;
+        if(total_deleted > ship_deleted && config.AI_RETROACTIVE_RELOAD !== false) {
+            console.info(`pakku ai_filter: seg ${segidx} background pass found ${total_deleted - ship_deleted} more clusters to delete, requesting danmaku reload`);
+            ai_request_reload();
+        }
+    });
     if(ret.ai_windows) {
         const budget_hit = windows_done < tasks.length;
         console.info(`pakku ai_filter: seg ${segidx} windows=${ret.ai_windows} done=${windows_done}/${tasks.length} budget_hit=${budget_hit} deleted(spam)=${ret.ai_deleted} deleted(ratio)=${ret.ai_deleted_ratio} kept=${ret.chunk.objs.length}/${chunk.objs.length} ship_ms=${Date.now() - t_start}`);

@@ -88,8 +88,12 @@ async function getChatResponse({ apiKey, baseUrl, model, messages }) {
     AI_WINDOW_SECONDS: 5,
     AI_MAX_CANDIDATES: 50,
     AI_SUBTITLE_PADDING_SECONDS: 5, // subtitle context: +/- this many seconds around each window
-    AI_CONCURRENCY: 4, // max simultaneous Jev requests
-    AI_BUDGET_MS: 6000, // max time a danmaku response waits for scoring before shipping unjudged parts
+    // official limits: 250k tokens/s, 1200 req/min (20 req/s); with ~2s per request,
+    // 8 concurrent ~= 4-5 req/s steady state, leaving headroom for retries and bursts
+    AI_CONCURRENCY: 8,
+    AI_BUDGET_MS: 800, // max time a danmaku response waits for scoring before shipping unjudged parts
+    AI_RETROACTIVE_RELOAD: true, // when background scoring finds new deletions, reload player danmaku (cached, seamless)
+    AI_VERDICT_CACHE: true, // persist per-(cid, window, text) verdicts (score/model/timestamp) for reuse and future sharing
 
     // 其他
     POPUP_BADGE: 'percent' as ('percent' | 'count' | 'dispval' | 'off'),

@@ -457,6 +457,8 @@ function loadconfig() {
     id('ai-subtitle-padding').value = config.AI_SUBTITLE_PADDING_SECONDS;
     id('ai-concurrency').value = config.AI_CONCURRENCY;
     id('ai-budget').value = config.AI_BUDGET_MS;
+    id('ai-retroactive').checked = config.AI_RETROACTIVE_RELOAD;
+    id('ai-verdict-cache').checked = config.AI_VERDICT_CACHE;
     void chrome.storage.local.get('AI_API_KEY', (st: any) => {
         let k: string = st.AI_API_KEY || '';
         id('ai-api-key').value = k;
@@ -699,8 +701,10 @@ function update(this: HTMLInputElement) {
     config.AI_RATIO = safe_float(id('ai-ratio').value, 0, 0.9, DEFAULT_CONFIG.AI_RATIO);
     config.AI_WINDOW_SECONDS = safe_int(id('ai-window-seconds').value, 3, 120, DEFAULT_CONFIG.AI_WINDOW_SECONDS);
     config.AI_SUBTITLE_PADDING_SECONDS = safe_int(id('ai-subtitle-padding').value, 0, 30, DEFAULT_CONFIG.AI_SUBTITLE_PADDING_SECONDS);
-    config.AI_CONCURRENCY = safe_int(id('ai-concurrency').value, 1, 16, DEFAULT_CONFIG.AI_CONCURRENCY);
-    config.AI_BUDGET_MS = safe_int(id('ai-budget').value, 1000, 60000, DEFAULT_CONFIG.AI_BUDGET_MS);
+    config.AI_CONCURRENCY = safe_int(id('ai-concurrency').value, 1, 32, DEFAULT_CONFIG.AI_CONCURRENCY);
+    config.AI_BUDGET_MS = safe_int(id('ai-budget').value, 0, 60000, DEFAULT_CONFIG.AI_BUDGET_MS);
+    config.AI_RETROACTIVE_RELOAD = id('ai-retroactive').checked;
+    config.AI_VERDICT_CACHE = id('ai-verdict-cache').checked;
     void chrome.storage.local.set({AI_API_KEY: id('ai-api-key').value.trim()});
     // 其他
     config.POPUP_BADGE = id('popup-badge').value;

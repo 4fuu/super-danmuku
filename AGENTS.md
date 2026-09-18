@@ -17,7 +17,7 @@ node tools/smoke_ai_filter.js   # AI 过滤层冒烟测试（mock chrome 与 Jev
 
 ## 代码结构
 
-- `pakkujs/core/ai_filter.ts` — AI 过滤层。插入点在 `core/scheduler.ts` 的 `try_start_postproc`：pakku 合并（post_combine）之后、egress 之前。窗口并发受 `AI_CONCURRENCY` 限制，响应整体受 `AI_BUDGET_MS` 预算约束：超预算先按已判定结果展示，其余窗口后台继续打分写入缓存（重载即享过滤结果）。每窗/每分片的判定记录经 `ai_log_append` 发给 background（上限 300 条，`chrome.storage.local`），设置页可查看/清空/导出。
+- `pakkujs/core/ai_filter.ts` — AI 过滤层。插入点在 `core/scheduler.ts` 的 `try_start_postproc`：pakku 合并（post_combine）之后、egress 之前。窗口并发受全局 `AI_CONCURRENCY` 限制（跨分片共享信号量），响应受 `AI_BUDGET_MS` 预算约束（默认 800ms，可设 0）：超预算先按已判定结果展示，其余窗口后台按时间顺序继续打分直到视频结束。429/529 指数退避重试（500ms·2^n，最多 5 次，尊重 Retry-After）。判定结果两级缓存：内存 L1（会话内）+ `chrome.storage.local` L2（键 `cid|window_lo|text`，值含 p/score/model/timestamp/bvid，上限 2 万条 LRU，模型变更自动失效），重看/重载零请求复用，为后续屏蔽项网络共享预留格式。后台打分新产生删除项时经 `ai_request_reload`（background 每 tab 15 秒防抖）触发 `player.reload` 播放器无感重载弹幕以应用过滤。每窗/每分片的判定记录经 `ai_log_append` 发给 background（上限 300 条，`chrome.storage.local`），设置页可查看/清空/导出。
 - `pakkujs/background/background.ts` — 消息代理：`jev_call`（调 Jev API）、`jev_ready`（key 存在性）、`bili_subtitle`（拉 AI 字幕，按 cid 缓存）。
 - `pakkujs/page/options.*` — 设置页（AI 设置在一级菜单，pakku 原生设置收拢）。
 - `pakkujs/background/config.ts` — `DEFAULT_CONFIG`，AI_* 前缀为本 fork 新增配置。

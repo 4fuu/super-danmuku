@@ -294,14 +294,24 @@
                     <p>
                         <label for="ai-concurrency">并发请求数：</label>
                         同时最多
-                        <input id="ai-concurrency" type="number" min="1" max="16" step="1" style="width: 70px">
-                        个 AI 请求
+                        <input id="ai-concurrency" type="number" min="1" max="32" step="1" style="width: 70px">
+                        个 AI 请求（官方限额 1200 次/分钟，默认 8 约占四分之一）
                     </p>
                     <p>
                         <label for="ai-budget">展示预算：</label>
                         弹幕最多等待 AI 判定
-                        <input id="ai-budget" type="number" min="1000" max="60000" step="500" style="width: 80px">
-                        毫秒，超时后先展示未判定的弹幕，判定在后台继续并缓存给下次加载
+                        <input id="ai-budget" type="number" min="0" max="60000" step="100" style="width: 80px">
+                        毫秒（0 为绝不等待；判定在后台继续，完成后自动刷新弹幕应用过滤）
+                    </p>
+                    <p>
+                        <input id="ai-retroactive" type="checkbox">
+                        <label for="ai-retroactive">判定完成后自动应用：</label>
+                        <span>后台判定出新删除项时让播放器重载弹幕（复用缓存，最多每 15 秒一次），已上屏的低质弹幕会随重载消失</span>
+                    </p>
+                    <p>
+                        <input id="ai-verdict-cache" type="checkbox">
+                        <label for="ai-verdict-cache">本地缓存判定结果：</label>
+                        <span>按视频+时间窗+文本缓存判定（含分数、模型、时间戳），重看或重载秒级复用不再请求，后续可用于屏蔽项共享</span>
                     </p>
                     <p class="warning">
                         * 需要在 <a href="https://typesafe.ai" target="_blank">typesafe.ai</a> 申请 API key；失败时自动回退为普通 pakku 过滤，不影响看视频

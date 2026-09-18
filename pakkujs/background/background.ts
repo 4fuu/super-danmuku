@@ -21,6 +21,9 @@ function ai_log_push(rec: any) {
     void chrome.storage.local.set({ai_log: ai_log_lines});
 }
 
+// per-tab last player-reload time (debounce for retroactive AI filtering)
+const ai_reload_last = new Map<number, number>();
+
 async function check_fix_permission() {
     let perms = await chrome.permissions.getAll();
 
@@ -306,6 +309,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         void chrome.storage.local.remove('ai_log');
         sendResponse({ok: true});
     }
+    else if(msg.type==='ai_request_reload') {
+        let perform = async ()=>{
+            let tabid = sender.tab?.id;
+            if(!tabid)
+                return sendResponse({ok: false});
+            // debounce: the player reloads danmaku at most once every 15s per tab
+            let now = Date.now();
+            let last = ai_reload_last.get(tabid) || 0;
+            if(now - last < 15000)
+                return sendResponse({ok: false, debounced: true});
+            ai_reload_last.set(tabid, now);
+            try {
+                await chrome.tabs.sendMessage(tabid, {type: 'reload_danmu', key: 1, trigger_player: true});
+                sendResponse({ok: true});
+            } catch(e) {
+                sendResponse({ok: false});
+            }
+        }
+        void perform();
+        return true;
+    }
     else if(msg.type==='jev_ready') {
         let perform = async ()=>{
             let ready = false;
@@ -342,8 +366,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 });
                 if(res.status===401 || res.status===403)
                     throw new Error('Jev API key invalid (' + res.status + ')');
-                if(res.status===429 || res.status===529)
-                    throw new Error('Jev API busy (' + res.status + ')');
+                if(res.status===429 || res.status===529) {
+                    // signal the caller to retry with exponential backoff
+                    let retry_after_ms = 0;
+                    try {
+                        let ra = parseFloat(res.headers.get('retry-after') || '0');
+                        if(isFinite(ra))
+                            retry_after_ms = Math.round(ra * 1000);
+                    } catch {}
+                    sendResponse({error: 'Jev API busy (' + res.status + ')', retryable: true, retry_after_ms});
+                    return;
+                }
                 if(!res.ok)
                     throw new Error('Jev API error ' + res.status);
                 let data = await res.json();
