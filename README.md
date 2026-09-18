@@ -23,11 +23,6 @@ B 站弹幕过滤器，基于 [xmcp/pakku.js](https://github.com/xmcp/pakku.js)�
 - 设置导入/导出改为文件下载/文件导入，导出文件不包含 API key。
 - 弹窗统计中新增「AI 判定无关」删除条数（按合并簇的真实弹幕条数计）。
 
-### 开发工具（tools/）
-
-- `bili_login.py`：B 站扫码登录脚本，获取测试用登录凭证（支持 SOCKS 代理）。
-- `fetch_subtitle.py`：拉取视频的 AI 字幕轨道，用于离线评测字幕上下文的效果。
-
 ## 从源码构建
 
 ```bash
