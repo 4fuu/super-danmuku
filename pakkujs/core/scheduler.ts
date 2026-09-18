@@ -12,7 +12,7 @@ import {
     Stats,
 } from "./types";
 import {post_combine} from "./post_combine";
-import {ai_filter_chunk} from "./ai_filter";
+import {ai_filter_chunk, set_ai_stats_hook} from "./ai_filter";
 import {UserscriptWorker} from "./userscript";
 import {do_inject} from "../injected/do_inject";
 import {
@@ -269,15 +269,24 @@ class Scheduler {
             try {
                 let t1 = +new Date();
 
+                // per-window deletions update the popup/badge as they happen;
+                // segments ship before all windows are scored, so a shipping-
+                // time-only total would freeze at the partial value
+                set_ai_stats_hook((delta) => {
+                    this.ongoing_stats.ai_deleted += delta;
+                    this.write_cur_message_stats();
+                });
                 let ai_res = await ai_filter_chunk(chunk_out, this.config, segidx);
                 chunk_out = ai_res.chunk;
                 this.ongoing_stats.ai_deleted += ai_res.ai_deleted + ai_res.ai_deleted_ratio;
 
                 let t2 = +new Date();
                 this.ongoing_stats.ai_filter_time_ms += Math.ceil(t2 - t1);
+                set_ai_stats_hook(null);
             } catch(e) {
                 // fail-open: AI filter must never break danmaku loading
                 console.warn('pakku ai_filter: error, passing chunk through unchanged', e);
+                set_ai_stats_hook(null);
             }
         }
 

@@ -280,6 +280,18 @@ class Semaphore {
 const global_sem = new Semaphore(8);
 
 // ---- diagnostic log (viewable & exportable from the options page) ----
+// incremental stats hook: the scheduler registers a callback so per-window
+// deletions land in the popup/badge as they happen (segments ship before all
+// windows finish, so the shipping-time total would undercount)
+let ai_stats_hook: ((delta_deleted: int)=>void) | null = null;
+export function set_ai_stats_hook(fn: ((delta_deleted: int)=>void) | null) {
+    ai_stats_hook = fn;
+}
+function ai_report_deleted(delta: int) {
+    if(delta > 0 && ai_stats_hook)
+        try { ai_stats_hook(delta); } catch(e) {}
+}
+
 function ai_log_append(rec: any) {
     try {
         chrome.runtime.sendMessage({type: 'ai_log_append', rec}, () => void chrome.runtime.lastError);
@@ -739,7 +751,11 @@ export async function ai_filter_chunk(
     // until playback nears them (like bilibili's own video buffering); 0 = score
     // everything to the end of the video. Never below ship_margin, or shipping
     // would wait on windows the deferral refuses to score.
-    const max_buffer_s = Math.max(0, config.AI_MAX_BUFFER_S ?? 120);
+    const max_buffer_s = Math.max(0, config.AI_MAX_BUFFER_S ?? 0);
+    // economy mode (max buffer > 0): windows beyond the buffer are shipped to the
+    // player UNJUDGED — bilibili consumes each segment response exactly once and
+    // never re-requests it, so their deletions cannot be applied afterwards.
+    // This trades completeness for tokens/latency and must be opt-in.
     const defer_ahead_s = max_buffer_s > 0 ? Math.max(max_buffer_s, ship_margin_s) : 0;
 
     // cache key excludes chunk size: with partial shipping, a re-run sees a
@@ -854,6 +870,7 @@ export async function ai_filter_chunk(
                     if(s && s.p_worst >= del_thr) {
                         deleted.add(c.idx);
                         ret.ai_deleted += c.count;
+                        ai_report_deleted(c.count);
                         log_cands.push({t: c.obj.content, n: c.count, p: s.p_worst, s: s.score, k: 0});
                     } else {
                         survivors.push({c, score: s ? s.score : 2});
@@ -869,6 +886,7 @@ export async function ai_filter_chunk(
                     for(let i = 0; i < drop_n; i++) {
                         ratio_deleted.add(survivors[i].c.idx);
                         ret.ai_deleted_ratio += survivors[i].c.count;
+                        ai_report_deleted(survivors[i].c.count);
                         let lc = log_cands.find(x => x.t === survivors[i].c.obj.content && x.k === 1);
                         if(lc)
                             lc.k = 2;
@@ -918,7 +936,10 @@ export async function ai_filter_chunk(
 
     // ship once the windows near the playhead (within one segment-ish margin)
     // are scored — anything ahead of that is background work; the playback gate
-    // pauses playback before it could ever reach unscored danmaku anyway
+    // pauses playback before it could ever reach unscored danmaku anyway.
+    // In economy mode (defer_ahead_s > 0) far windows are NOT scored yet, so
+    // their unjudged danmaku ship as-is; the gate delays playback until the
+    // pump releases and scores them as the playhead approaches.
     const my_round = gate_round_seq;
     const ship_ready = () => {
         if(gate_round_seq !== my_round)

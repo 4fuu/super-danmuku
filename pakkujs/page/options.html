@@ -311,10 +311,10 @@
                         秒后自动恢复播放（等待期间覆盖用户的播放/暂停操作；超过 60 秒未完成则放行不再拦截）
                     </p>
                     <p>
-                        <label for="ai-max-buffer">最大缓冲：</label>
-                        判定进度最多领先播放进度
+                        <label for="ai-max-buffer">省流模式：</label>
+                        判定最多领先播放进度
                         <input id="ai-max-buffer" type="number" min="0" max="3600" step="10" style="width: 70px">
-                        秒，超出部分等播放临近再判（0 为一直判到视频末尾；默认 120）
+                        秒（0 为关闭，默认关闭：判定整个视频，上屏弹幕全部经过过滤）。开启后更远的弹幕先不判定、随播放临近再判，可大幅减少请求；代价是判定完成前播放到该段会短暂等待
                     </p>
                     <p>
                         <label for="ai-max-text-len">字数上限：</label>

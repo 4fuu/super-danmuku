@@ -94,7 +94,7 @@ async function getChatResponse({ apiKey, baseUrl, model, messages }) {
     AI_BUDGET_MS: 45000, // safety valve: max wait for full scoring of one segment response
     AI_PAUSE_GATE: true, // pause the video immediately (with overlay) until scoring leads playback
     AI_PAUSE_MARGIN_S: 5, // resume only when this many seconds of scored video lead the playhead
-    AI_MAX_BUFFER_S: 120, // max scored-video lead ahead of the playhead; windows beyond this are deferred (0 = score to the end)
+    AI_MAX_BUFFER_S: 0, // economy mode: score at most this far ahead of the playhead; windows beyond ship unjudged and are scored as playback nears (0 = score everything; deletions beyond the buffer cannot be applied after shipping, so off by default)
     AI_MAX_TEXT_LEN: 12, // danmaku longer than this skip judgement and pass through; short spam is where the problem is
     AI_VERDICT_CACHE: false, // experimental: persist per-(cid, window, text) verdicts; off until the pipeline stabilizes
 
