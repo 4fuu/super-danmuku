@@ -115,7 +115,7 @@ const QUALITY_LEVELS = [
     'High-value content: informative observation, useful question or opinion about the video subject',
 ];
 
-function build_request(video_key: string, window_lo: int, segidx: int, cands: {text: string, count: int, span_s: number}[]) {
+function build_request(video_key: string, window_lo: int, window_hi: int, segidx: int, cands: {text: string, count: int, span_s: number}[]) {
     const state: any = {
         video: {
             title: video_ctx.title || '',
@@ -125,7 +125,8 @@ function build_request(video_key: string, window_lo: int, segidx: int, cands: {t
         },
         danmaku_window: {
             segment_index: segidx,
-            time_range_seconds: window_lo + '~' + (window_lo + 30),
+            time_range_seconds: window_lo + '~' + window_hi,
+            subtitle_in_window: slice_subtitle(window_lo, window_hi),
         },
         candidates: cands.map((c, i) => ({i, text: c.text, merged_count: c.count, span_seconds: c.span_s})),
         stats_note: 'merged_count = how many danmaku were merged into this text after de-duplication; span_seconds = how long this text kept appearing inside this window',
@@ -146,7 +147,7 @@ function build_request(video_key: string, window_lo: int, segidx: int, cands: {t
     return {state, model: 'jev-latest', questions};
 }
 
-async function score_batch(video_key: string, window_lo: int, segidx: int, batch: Candidate[]): Promise<{p_worst: number, score: number, text: string}[]> {
+async function score_batch(video_key: string, window_lo: int, window_hi: int, segidx: int, batch: Candidate[]): Promise<{p_worst: number, score: number, text: string}[]> {
     const cands = batch.map(c => ({
         text: c.obj.content,
         count: c.count,
@@ -158,7 +159,7 @@ async function score_batch(video_key: string, window_lo: int, segidx: int, batch
     if(hit)
         return hit;
 
-    const body = build_request(video_key, window_lo, segidx, cands);
+    const body = build_request(video_key, window_lo, window_hi, segidx, cands);
     const resp = await call_jev(body);
     const answers = resp && resp.answers;
     if(!answers)
@@ -206,6 +207,61 @@ function refresh_video_ctx_from_dom() {
     }
 }
 
+// subtitle context (fetched once per video through the background proxy;
+// the user's own bilibili login cookies are used, credentials: include)
+interface SubtitleLine {from: number, to: number, content: string}
+let subtitle_lines: SubtitleLine[] | null = null;
+let subtitle_video_key = '';
+
+function get_bvid_from_url(): string {
+    try {
+        let m = location.pathname.match(/BV[0-9A-Za-z]{10}/);
+        return m ? m[0] : '';
+    } catch(e) {
+        return ''; // non-browser context (tests)
+    }
+}
+
+function fetch_subtitle(bvid: string, cid: int): Promise<SubtitleLine[] | null> {
+    return new Promise((resolve) => {
+        try {
+            chrome.runtime.sendMessage({type: 'bili_subtitle', bvid, cid}, (resp: any) => {
+                if(chrome.runtime.lastError || !resp || resp.error)
+                    return resolve(null);
+                resolve(resp.lines || []);
+            });
+        } catch(e) {
+            resolve(null);
+        }
+    });
+}
+
+async function ensure_subtitle(video_key: string, bvid: string, cid: int) {
+    if(subtitle_video_key === video_key)
+        return; // already fetched (or failed) for this video
+    subtitle_video_key = video_key;
+    let lines = await with_timeout(fetch_subtitle(bvid, cid), 5000, null);
+    subtitle_lines = lines;
+    if(lines && lines.length)
+        console.debug(`pakku ai_filter: subtitle context loaded, ${lines.length} lines`);
+    else
+        console.debug('pakku ai_filter: no subtitle context (not logged in, no AI subtitle, or fetch failed)');
+}
+
+function slice_subtitle(lo_s: number, hi_s: number): string {
+    if(!subtitle_lines || !subtitle_lines.length)
+        return '';
+    let parts: string[] = [];
+    for(const l of subtitle_lines) {
+        if(l.to > lo_s && l.from < hi_s)
+            parts.push(l.content);
+        if(l.from >= hi_s)
+            break;
+    }
+    let joined = parts.join(' ');
+    return joined.length > 800 ? joined.slice(0, 800) : joined;
+}
+
 export interface AiFilterResult {
     chunk: DanmuChunk<DanmuObjectRepresentative>;
     ai_deleted: int;
@@ -236,6 +292,18 @@ export async function ai_filter_chunk(
     const ratio = typeof config.AI_RATIO === 'number' ? config.AI_RATIO : 0;
 
     const video_key = String(video_ctx.title || '') + '|' + (chunk.extra.proto_segidx !== undefined ? chunk.extra.proto_segidx : segidx) + '|' + chunk.objs.length;
+
+    // subtitle context: cid comes from the intercepted danmaku stream, bvid from the page URL
+    let cid = 0;
+    for(const obj of chunk.objs) {
+        if(obj.extra && obj.extra.proto_oid) {
+            cid = obj.extra.proto_oid;
+            break;
+        }
+    }
+    let bvid = get_bvid_from_url();
+    if(cid && bvid)
+        await ensure_subtitle('cid_' + cid, bvid, cid);
 
     // bucket merged clusters into time windows
     const windows = new Map<int, Candidate[]>();
@@ -281,7 +349,7 @@ export async function ai_filter_chunk(
                 let scores: {p_worst: number, score: number, text: string}[];
                 try {
                     scores = await with_timeout(
-                        score_batch(video_key, Math.floor(w * win_ms / 1000), segidx, batch),
+                        score_batch(video_key, Math.floor(w * win_ms / 1000), Math.floor((w + 1) * win_ms / 1000), segidx, batch),
                         15000,
                         batch.map(c => ({p_worst: 0, score: 2, text: c.obj.content})), // fail-open
                     );
@@ -293,6 +361,7 @@ export async function ai_filter_chunk(
                     const s = scores[i];
                     if(s && s.p_worst >= del_thr) {
                         deleted.add(c.idx);
+                        ret.ai_deleted += c.count;
                     } else {
                         survivors.push({c, score: s ? s.score : 2});
                     }
@@ -303,8 +372,10 @@ export async function ai_filter_chunk(
                 const drop_n = Math.floor(survivors.length * ratio);
                 if(drop_n > 0) {
                     survivors.sort((a, b) => a.score - b.score);
-                    for(let i = 0; i < drop_n; i++)
+                    for(let i = 0; i < drop_n; i++) {
                         ratio_deleted.add(survivors[i].c.idx);
+                        ret.ai_deleted_ratio += survivors[i].c.count;
+                    }
                 }
             }
         })());
@@ -317,11 +388,6 @@ export async function ai_filter_chunk(
             objs: chunk.objs.filter((_, idx) => !deleted.has(idx) && !ratio_deleted.has(idx)),
             extra: chunk.extra,
         };
-        // annotate for pakku's deleted-danmaku view
-        for(const obj of ret.chunk.objs)
-            continue; // kept as-is
-        ret.ai_deleted = deleted.size;
-        ret.ai_deleted_ratio = ratio_deleted.size;
     }
     if(ret.ai_windows)
         console.info(`pakku ai_filter: seg ${segidx} windows=${ret.ai_windows} deleted(spam)=${ret.ai_deleted} deleted(ratio)=${ret.ai_deleted_ratio} kept=${ret.chunk.objs.length}/${chunk.objs.length}`);

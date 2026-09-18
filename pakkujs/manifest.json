@@ -22,6 +22,7 @@
     ],
     "host_permissions": [
         "*://*.bilibili.com/*",
+        "https://aisubtitle.hdslb.com/*",
         "https://api.typesafe.ai/*"
     ],
     "optional_host_permissions": [

@@ -4,6 +4,9 @@ import {get_state, HAS_SESSION_STORAGE, init_state, save_state} from "./state";
 import {LocalizedConfig} from "../core/types";
 import {is_permission_buggy, do_fix_permission} from './permission_check';
 
+// cid -> subtitle lines [{from, to, content}] (seconds); empty array = video has no subtitle
+const subtitle_cache = new Map<number, any[]>();
+
 async function check_fix_permission() {
     let perms = await chrome.permissions.getAll();
 
@@ -239,6 +242,43 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     else if(msg.type==='reset_dnr_status') {
         void install_dnr_rule();
+    }
+    else if(msg.type==='bili_subtitle') {
+        let perform = async ()=>{
+            try {
+                let cached = subtitle_cache.get(msg.cid);
+                if(cached) {
+                    sendResponse({error: null, lines: cached});
+                    return;
+                }
+                let pv = await fetch(`https://api.bilibili.com/x/player/wbi/v2?bvid=${encodeURIComponent(msg.bvid)}&cid=${msg.cid}`, {credentials: 'include'});
+                let pvj = await pv.json();
+                if(pvj && pvj.code === -352 || pvj && pvj.code === -412) {
+                    sendResponse({error: 'risk control ' + pvj.code, lines: null});
+                    return;
+                }
+                let subs = (pvj && pvj.data && pvj.data.subtitle && pvj.data.subtitle.subtitles) || [];
+                if(!subs.length) {
+                    subtitle_cache.set(msg.cid, []);
+                    sendResponse({error: 'no_subtitle', lines: []}); // remember: don't retry this video
+                    return;
+                }
+                let rank = (x: any) => x.lan==='ai-zh' ? 0 : (x.lan||'').startsWith('zh') ? 1 : 2;
+                subs.sort((a: any, b: any) => rank(a) - rank(b));
+                let url: string = subs[0].subtitle_url || '';
+                if(url.startsWith('//'))
+                    url = 'https:' + url;
+                let st = await fetch(url, {credentials: 'include'});
+                let stj = await st.json();
+                let lines = ((stj && stj.body) || []).map((l: any) => ({from: l.from, to: l.to, content: l.content}));
+                subtitle_cache.set(msg.cid, lines);
+                sendResponse({error: null, lines});
+            } catch(e: any) {
+                sendResponse({error: e.message || String(e), lines: null});
+            }
+        }
+        void perform();
+        return true;
     }
     else if(msg.type==='jev_ready') {
         let perform = async ()=>{
