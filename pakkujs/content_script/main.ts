@@ -60,16 +60,22 @@ let unreg_userscript = true;
 
 function _really_get_local_config(is_pure_env: boolean): Promise<{tabid: int, local_config: LocalizedConfig}> {
     return new Promise((resolve, reject) => {
-        chrome.runtime.sendMessage({
-            type: 'get_local_config',
-            is_pure_env: is_pure_env,
-        }, (res)=>{
-            if(res.error) {
-                reject('in background script: '+res.error);
-            } else {
-                resolve(res.result);
-            }
-        });
+        try {
+            chrome.runtime.sendMessage({
+                type: 'get_local_config',
+                is_pure_env: is_pure_env,
+            }, (res)=>{
+                if(chrome.runtime.lastError) // e.g. extension context invalidated after an update
+                    return reject(chrome.runtime.lastError.message || 'extension context invalidated');
+                if(!res || res.error) {
+                    reject('in background script: ' + ((res && res.error) || 'no response'));
+                } else {
+                    resolve(res.result);
+                }
+            });
+        } catch(e) { // sendMessage throws synchronously once the context is invalidated
+            reject(e);
+        }
     });
 }
 
@@ -83,9 +89,9 @@ async function get_local_config(is_pure_env: boolean = false): Promise<Localized
         // storage cleanup
         window.onbeforeunload = function() {
             if(unreg_userscript)
-                void remove_state([`STATS_${tabid}`, `USERSCRIPT_${tabid}`]);
+                remove_state([`STATS_${tabid}`, `USERSCRIPT_${tabid}`]).catch(()=>{});
             else
-                void remove_state([`STATS_${tabid}`]);
+                remove_state([`STATS_${tabid}`]).catch(()=>{});
 
             // in case of page refresh: clear the badge
             try {
@@ -97,7 +103,9 @@ async function get_local_config(is_pure_env: boolean = false): Promise<Localized
     return local_config;
 }
 
-void get_local_config();
+void get_local_config().catch((e) => {
+    console.warn('pakku injected: cannot get local config', e);
+});
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if(msg.type==='ping') {
