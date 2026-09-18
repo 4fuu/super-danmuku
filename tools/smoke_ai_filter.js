@@ -135,6 +135,7 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
         AI_SUBTITLE_PADDING_SECONDS: 5, AI_CONCURRENCY: 4, AI_BUDGET_MS: 6000,
         AI_PAUSE_GATE: false, // gate needs a real <video>; exercised manually
         AI_VERDICT_CACHE: true, // scenario 5 covers the persistence path explicitly
+        AI_MAX_TEXT_LEN: 40, // scenarios 1-7 assume long texts are judged; scenario 8 tests the limit itself
     };
 
     const res = await mod.ai_filter_chunk(chunk, config, 1);
@@ -296,22 +297,26 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     // ===== scenario 8: length limit skips judgement, passes through =====
     jev_calls = [];
     jev_delay_ms = 0;
-    const long_spam = '中'.repeat(60); // spam-looking but over the length limit -> pass through
+    const cfg8 = {...config, AI_MAX_TEXT_LEN: 5};
+    const long_spam = '中'.repeat(60); // far over the limit -> pass through
+    const six_spam = '六个字的刷中'; // 6 chars, over the limit of 5 -> pass through
     const objs8 = [
         mkobj(1000, long_spam, 10),
+        mkobj(1500, six_spam, 6),
         mkobj(2000, '字数限中', 3),
         mkobj(3000, '字数限抽', 3),
         mkobj(4000, '字数限奖', 3),
     ];
-    const res8 = await mod.ai_filter_chunk({objs: objs8, extra: {proto_segidx: 9}}, config, 9);
+    const res8 = await mod.ai_filter_chunk({objs: objs8, extra: {proto_segidx: 9}}, cfg8, 9);
     const kept8 = new Set(res8.chunk.objs.map(o => o.content));
     const req_cands = jev_calls.flatMap(c => c.state.candidates.map(x => x.text));
     console.log(`scenario8: kept=${[...kept8].join('/')} request_cands=${req_cands.length}`);
-    assert(kept8.has(long_spam), 'over-long danmaku passes through without judgement');
+    assert(kept8.has(long_spam) && kept8.has(six_spam), 'over-limit danmaku passes through without judgement');
     assert(!kept8.has('字数限中') && !kept8.has('字数限抽') && !kept8.has('字数限奖'), 'short spam still deleted');
-    assert(!req_cands.includes(long_spam), 'long danmaku never sent to the API');
+    assert(jev_calls.length === 1, 'one request for the eligible short candidates');
+    assert(!req_cands.includes(long_spam) && !req_cands.includes(six_spam), 'over-limit danmaku never sent to the API');
     const seg_log_8 = ai_log_msgs.filter(m => m.type === 'seg' && m.segidx === 9).pop();
-    assert(seg_log_8 && seg_log_8.long_skipped === 1, 'long_skipped counted in segment log');
+    assert(seg_log_8 && seg_log_8.long_skipped === 2, 'long_skipped counted in segment log');
 
     console.log('ALL ASSERTIONS PASSED');
 })().catch(e => { console.error(e); process.exit(1); });

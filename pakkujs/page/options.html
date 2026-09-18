@@ -313,8 +313,8 @@
                     <p>
                         <label for="ai-max-text-len">字数上限：</label>
                         超过
-                        <input id="ai-max-text-len" type="number" min="10" max="200" step="5" style="width: 60px">
-                        字的弹幕不进行判定，直接放行
+                        <input id="ai-max-text-len" type="number" min="5" max="200" step="1" style="width: 60px">
+                        字的弹幕不进行判定，直接放行（默认 5：低质刷屏基本都在 5 字以内，长弹幕多为正常内容）
                     </p>
                     <p>
                         <input id="ai-verdict-cache" type="checkbox">
