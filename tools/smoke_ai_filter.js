@@ -318,5 +318,48 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     const seg_log_8 = ai_log_msgs.filter(m => m.type === 'seg' && m.segidx === 9).pop();
     assert(seg_log_8 && seg_log_8.long_skipped === 2, 'long_skipped counted in segment log');
 
+    // ===== scenario 9: gate pauses for real pending windows, never for the coverage edge =====
+    jev_calls = [];
+    jev_delay_ms = 0;
+    const fake_video = {
+        currentTime: 29.5, paused: false,
+        pause_calls: 0, play_calls: 0,
+        pause() { this.paused = true; this.pause_calls++; },
+        play() { this.paused = false; this.play_calls++; return Promise.resolve(); },
+        closest: () => null, parentElement: null, // no overlay host -> overlay no-op in the mock
+    };
+    global.document.querySelector = (sel) => sel === 'video' ? fake_video : null;
+    global.document.body = true;
+    global.document.getElementById = () => null;
+    global.document.createElement = () => ({style: {}, id: '', textContent: '', innerHTML: '', appendChild() {}, remove() {}, querySelector: () => null});
+    global.document.head = {appendChild() {}};
+
+    const cfg9 = {...config, AI_PAUSE_GATE: true, AI_PAUSE_MARGIN_S: 5, AI_WINDOW_SECONDS: 5};
+    // chunk covering 0~30s, all windows score instantly; the playhead at 29.5s sits
+    // exactly at the edge of loaded coverage — this must NOT pause (deadlock fix)
+    const objs9 = [];
+    for(let t = 0; t < 30; t += 5)
+        objs9.push(mkobj(t * 1000 + 500, '边缘场景弹幕', 4));
+    await mod.ai_filter_chunk({objs: objs9, extra: {proto_segidx: 11}}, cfg9, 11);
+    await sleep(1200); // gate ticks run with every window done
+    console.log(`scenario9a: edge-only pause_calls=${fake_video.pause_calls}`);
+    assert(fake_video.pause_calls === 0 && !fake_video.paused, 'coverage edge alone must not pause playback');
+
+    // a chunk whose windows overlap the playhead while scoring is slow: must pause, then resume
+    jev_delay_ms = 1500;
+    const objs9b = [];
+    for(let t = 30; t < 45; t += 5) { // 3 candidates per window so they actually register as pending
+        objs9b.push(mkobj(t * 1000 + 500, '慢速窗口弹幕一', 4));
+        objs9b.push(mkobj(t * 1000 + 1200, '慢速窗口弹幕二', 4));
+        objs9b.push(mkobj(t * 1000 + 1900, '慢速窗口弹幕三', 4));
+    }
+    await mod.ai_filter_chunk({objs: objs9b, extra: {proto_segidx: 12}}, cfg9, 12);
+    await sleep(1000); // next tick notices the windows are done and resumes
+    console.log(`scenario9b: pause_calls=${fake_video.pause_calls} play_calls=${fake_video.play_calls} paused=${fake_video.paused}`);
+    assert(fake_video.pause_calls >= 1, 'pending windows near the playhead still pause playback');
+    assert(fake_video.play_calls >= 1 && !fake_video.paused, 'playback resumes once the windows are scored');
+    global.document.querySelector = () => null; // stop gating the mock video
+
     console.log('ALL ASSERTIONS PASSED');
+    process.exit(0); // the gate's poll timer would otherwise hold the process open
 })().catch(e => { console.error(e); process.exit(1); });

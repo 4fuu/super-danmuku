@@ -435,7 +435,8 @@ function gate_tick() {
         if(!video || !gate_enabled || !(document as any).body) {
             gate_no_video_ticks++;
             gate_hide_overlay();
-            gate_paused_by_us = false;
+            // note: gate_paused_by_us is kept so the give-up clock is not reset by
+            // the player swapping/recreating its <video> element during load
             // stop polling when there is nothing to gate (also lets tests exit)
             if(gate_no_video_ticks < 10)
                 gate_timer = setTimeout(gate_tick, 1000);
@@ -453,6 +454,12 @@ function gate_tick() {
         let now_s = video.currentTime || 0;
         let lo_w = Math.floor(now_s / gate_window_s);
         let hi_w = Math.floor((now_s + gate_margin_s) / gate_window_s);
+        // Only windows actually pending around the playhead gate playback. The
+        // playhead reaching the edge of *loaded* danmaku coverage must NOT count
+        // as unsafe: bilibili fetches the next danmaku segment lazily as playback
+        // approaches it, so pausing there deadlocks — the segment only arrives
+        // while playing. When it does arrive, its windows register as pending and
+        // gate normally (the response itself waits for full scoring anyway).
         let unsafe = false;
         for(let w = lo_w; w <= hi_w; w++) {
             if(gate_pending.has(w)) {
@@ -460,8 +467,6 @@ function gate_tick() {
                 break;
             }
         }
-        if(!unsafe && gate_max_end_s > 0 && now_s + gate_margin_s > gate_max_end_s + 1)
-            unsafe = true; // approaching the edge of loaded danmaku coverage
 
         if(unsafe) {
             if(!video.paused) {

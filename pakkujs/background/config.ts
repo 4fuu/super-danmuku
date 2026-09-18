@@ -84,7 +84,7 @@ async function getChatResponse({ apiKey, baseUrl, model, messages }) {
     AI_FILTER: false,
     AI_API_KEY: '' as string,
     AI_DELETE_THRESHOLD: 0.6, // p(spam) >= this -> delete regardless of ratio
-    AI_RATIO: 0.2, // additionally drop the worst fraction per window (0 to disable), e.g. 0.2 = 1/5
+    AI_RATIO: 0.6, // additionally drop the worst fraction per window (0 to disable)
     AI_WINDOW_SECONDS: 5,
     AI_MAX_CANDIDATES: 50,
     AI_SUBTITLE_PADDING_SECONDS: 5, // subtitle context: +/- this many seconds around each window
@@ -93,8 +93,8 @@ async function getChatResponse({ apiKey, baseUrl, model, messages }) {
     AI_CONCURRENCY: 8,
     AI_BUDGET_MS: 45000, // safety valve: max wait for full scoring of one segment response
     AI_PAUSE_GATE: true, // pause the video immediately (with overlay) until scoring leads playback
-    AI_PAUSE_MARGIN_S: 20, // resume only when this many seconds of scored video lead the playhead
-    AI_MAX_TEXT_LEN: 5, // danmaku longer than this skip judgement and pass through; short spam is where the problem is
+    AI_PAUSE_MARGIN_S: 5, // resume only when this many seconds of scored video lead the playhead
+    AI_MAX_TEXT_LEN: 12, // danmaku longer than this skip judgement and pass through; short spam is where the problem is
     AI_VERDICT_CACHE: false, // experimental: persist per-(cid, window, text) verdicts; off until the pipeline stabilizes
 
     // 其他

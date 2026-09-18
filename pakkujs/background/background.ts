@@ -332,14 +332,32 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 }
                 if(!key)
                     throw new Error('no Jev API key configured');
-                let res = await fetch('https://api.typesafe.ai/v1/systemone', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': 'Bearer ' + key,
-                    },
-                    body: JSON.stringify(msg.body),
-                });
+                // hard timeout: a stalled request must never hang a scoring window
+                // (the playback gate waits on window completion, so a hang would
+                // stall playback gating indefinitely)
+                const ctrl = new AbortController();
+                const abort_timer = setTimeout(() => ctrl.abort(), 30000);
+                let res: any;
+                try {
+                    res = await fetch('https://api.typesafe.ai/v1/systemone', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': 'Bearer ' + key,
+                        },
+                        body: JSON.stringify(msg.body),
+                        signal: ctrl.signal,
+                    });
+                } catch(e: any) {
+                    if(e && e.name === 'AbortError') {
+                        sendResponse({error: 'Jev API timeout (30s)', retryable: true, retry_after_ms: 0});
+                    } else {
+                        sendResponse({error: e.message || String(e)});
+                    }
+                    return;
+                } finally {
+                    clearTimeout(abort_timer);
+                }
                 if(res.status===401 || res.status===403)
                     throw new Error('Jev API key invalid (' + res.status + ')');
                 if(res.status===429 || res.status===529) {
