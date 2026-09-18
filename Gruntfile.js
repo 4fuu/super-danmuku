@@ -40,10 +40,15 @@ function firefox_manifest(src, path) {
         obj.browser_specific_settings = {
             gecko: {
                 id: '{9da0e0aa-0d7c-4695-8969-92be691a0236}',
-                strict_min_version: '113.0',
-                // version requirement due to:
-                // - https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/declarativeNetRequest
-                // - https://developer.mozilla.org/en-US/docs/Web/API/Compression_Streams_API
+                // 140.0: data_collection_permissions is rejected by older Firefox
+                // (https://extensionworkshop.com/documentation/develop/firefox-builtin-data-consent/)
+                strict_min_version: '140.0',
+                // required by AMO for new submissions since 2025-11-03.
+                // websiteContent: danmaku and subtitle text are sent to the
+                // user-configured AI endpoint (api.typesafe.ai) for scoring.
+                data_collection_permissions: {
+                    required: ['websiteContent'],
+                },
             },
         };
 

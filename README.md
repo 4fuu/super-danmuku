@@ -1,5 +1,7 @@
 # super-danmuku
 
+<p align="center"><img src="icon.svg" width="120" alt="super-danmuku logo"></p>
+
 B 站弹幕过滤器，基于 [xmcp/pakku.js](https://github.com/xmcp/pakku.js)（GPLv3）修改而成，在其弹幕去重合并的基础上新增了 AI 弹幕质量过滤。
 
 > 本项目是个人维护的 fork，与原项目相互独立；原项目自身的商店发布与下载渠道与本 fork 无关，此处不提供。所有修改内容见下文。
