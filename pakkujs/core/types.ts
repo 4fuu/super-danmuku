@@ -138,6 +138,9 @@ export class Stats {
     num_max_combo= 0;
     num_max_dispval = 0;
 
+    ai_deleted= 0;
+    ai_filter_time_ms = 0;
+
     notify(tabid: int, config: Config) {
         save_state({['STATS_'+tabid]: this})
             .then(()=>{

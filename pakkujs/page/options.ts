@@ -245,46 +245,66 @@ async function try_save_config(config: Config) {
     return error_msg;
 }
 
-async function backup_restore_prompt() {
-    let inp = prompt('直接按回车来导出设置；将设置粘贴到此处来导入设置。');
-    if(inp === null) return;
-    if(!inp) { // export
-        document.body.textContent = JSON.stringify(config);
-        document.body.style.wordBreak = 'break-all';
-        document.body.style.fontFamily = 'Consolas, Courier, monospace';
-        document.body.style.padding = '.5em';
-        alert('导出成功。\n请将屏幕上的文本妥善保存在别处。');
-    } else { // import
-        try {
-            config = JSON.parse(inp);
-            config._CONFIG_VER = config._CONFIG_VER || 0;
-            config = migrate_config(config);
-            fix_invalid_keys(config);
+async function export_config_to_file() {
+    let blob = new Blob([JSON.stringify(config, null, 2)], {type: 'application/json'});
+    let url = URL.createObjectURL(blob);
+    let a = document.createElement('a');
+    a.href = url;
+    a.download = 'super-danmaku-config.json';
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(url), 5000);
+    alert('导出成功。\n文件包含全部设置，但不包含 API key。');
+}
 
-            let err = await try_save_config(config);
-            loadconfig();
+async function import_config_from_file(file: File) {
+    try {
+        let text = await file.text();
+        config = JSON.parse(text);
+        config._CONFIG_VER = config._CONFIG_VER || 0;
+        config = migrate_config(config);
+        fix_invalid_keys(config);
 
-            if(config.BREAK_UPDATE)
-                get_ws_permission_and_reload();
-            else
-                void chrome.runtime.sendMessage({type: 'reset_dnr_status'});
+        let err = await try_save_config(config);
+        loadconfig();
 
-            alert(err || '导入成功。');
-            setTimeout(()=>{
-                location.reload();
-            }, 200);
-        } catch(e) {
-            alert('导入失败。\n\n' + (e as Error).message);
-            throw e;
-        }
+        if(config.BREAK_UPDATE)
+            get_ws_permission_and_reload();
+        else
+            void chrome.runtime.sendMessage({type: 'reset_dnr_status'});
+
+        alert(err || '导入成功。');
+        setTimeout(()=>{
+            location.reload();
+        }, 200);
+    } catch(e) {
+        alert('导入失败。\n\n' + (e as Error).message);
+        throw e;
     }
 }
 
 id('version').addEventListener('click', async function(event: MouseEvent) {
     if(event.altKey && event.ctrlKey)
-        await backup_restore_prompt();
+        await export_config_to_file();
 });
-id('backup-restore').addEventListener('click', backup_restore_prompt);
+id('export-config').addEventListener('click', ()=>void export_config_to_file());
+id('import-config').addEventListener('click', ()=>{
+    (id('import-config-file') as HTMLInputElement).value = '';
+    id('import-config-file').click();
+});
+id('import-config-file').addEventListener('change', function(this: HTMLInputElement) {
+    let files = this.files;
+    if(files && files.length)
+        void import_config_from_file(files[0]);
+});
+
+function apply_pakku_native_toggle() {
+    if(id('show-pakku-native').checked)
+        document.body.classList.add('show-pakku-native');
+    else
+        document.body.classList.remove('show-pakku-native');
+    localStorage.setItem('show_pakku_native', id('show-pakku-native').checked ? '1' : '');
+}
+id('show-pakku-native').addEventListener('change', apply_pakku_native_toggle);
 
 for(let elem of document.querySelectorAll('a[data-help-text]') as NodeListOf<HTMLElement>) {
     let txt = elem.dataset['helpText']!.replace(/\\n/g, '\n');
@@ -380,6 +400,16 @@ function loadconfig() {
     id('break-update').checked = config.BREAK_UPDATE;
     id('takeover-aijudge').checked = config.TAKEOVER_AIJUDGE;
     id('scroll-threshold').value = config.SCROLL_THRESHOLD;
+    // AI 弹幕过滤
+    id('ai-filter').checked = config.AI_FILTER;
+    id('ai-delete-threshold').value = config.AI_DELETE_THRESHOLD;
+    id('ai-ratio').value = config.AI_RATIO;
+    id('ai-window-seconds').value = config.AI_WINDOW_SECONDS;
+    void chrome.storage.local.get('AI_API_KEY', (st: any) => {
+        let k: string = st.AI_API_KEY || '';
+        id('ai-api-key').value = k;
+        id('ai-api-key-status').textContent = k ? '（已配置）' : '（未配置）';
+    });
     // 其他
     id('popup-badge').value = config.POPUP_BADGE;
     id('combine-threads').value = config.COMBINE_THREADS;
@@ -388,6 +418,9 @@ function loadconfig() {
     // advanced options
     if(id('show-advanced').checked) document.body.classList.add('i-am-advanced');
     else document.body.classList.remove('i-am-advanced');
+    // pakku native collapse state (persisted locally, not in config)
+    id('show-pakku-native').checked = localStorage.getItem('show_pakku_native') === '1';
+    apply_pakku_native_toggle();
     // opacity stuff
     id('mark-threshold-panel').style.opacity = '' + (config.DANMU_MARK ? 1 : .3);
     id('danmu-subscript-panel').style.opacity = '' + (config.DANMU_MARK ? 1 : .3);
@@ -562,6 +595,16 @@ function safe_int(x: string, min: number | null, max: number | null, fallback: n
         return v;
 }
 
+function safe_float(x: string, min: number | null, max: number | null, fallback: number) {
+    let v = parseFloat(x);
+    if(isNaN(v) || (min!==null && v<min) || (max!==null && v>max)) {
+        alert(`数值无效（${x}），已恢复为默认`);
+        return fallback;
+    }
+    else
+        return v;
+}
+
 function update(this: HTMLInputElement) {
     config.ADVANCED_USER = id('show-advanced').checked;
     // 弹幕合并
@@ -598,6 +641,12 @@ function update(this: HTMLInputElement) {
     config.BREAK_UPDATE = id('break-update').checked;
     config.TAKEOVER_AIJUDGE = id('takeover-aijudge').checked;
     config.SCROLL_THRESHOLD = safe_int(id('scroll-threshold').value, 0, null, DEFAULT_CONFIG.SCROLL_THRESHOLD);
+    // AI 弹幕过滤 (key deliberately NOT stored in config -> stays out of chrome.storage.sync)
+    config.AI_FILTER = id('ai-filter').checked;
+    config.AI_DELETE_THRESHOLD = safe_float(id('ai-delete-threshold').value, 0, 1, DEFAULT_CONFIG.AI_DELETE_THRESHOLD);
+    config.AI_RATIO = safe_float(id('ai-ratio').value, 0, 0.9, DEFAULT_CONFIG.AI_RATIO);
+    config.AI_WINDOW_SECONDS = safe_int(id('ai-window-seconds').value, 10, 120, DEFAULT_CONFIG.AI_WINDOW_SECONDS);
+    void chrome.storage.local.set({AI_API_KEY: id('ai-api-key').value.trim()});
     // 其他
     config.POPUP_BADGE = id('popup-badge').value;
     config.COMBINE_THREADS = safe_int(id('combine-threads').value, 0, null, DEFAULT_CONFIG.COMBINE_THREADS);
@@ -628,6 +677,8 @@ for(let elem of [
     'tooltip', 'tooltip-keybinding', 'auto-disable-danmu', 'auto-danmu-list', 'fluctlight',
     // 实验室
     'break-update', 'takeover-aijudge', 'scroll-threshold',
+    // AI 弹幕过滤
+    'ai-filter', 'ai-api-key', 'ai-delete-threshold', 'ai-ratio', 'ai-window-seconds',
     // 其他
     'popup-badge', 'combine-threads', 'read-player-blacklist',
 ]) {

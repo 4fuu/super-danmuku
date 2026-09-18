@@ -12,6 +12,7 @@ import {
     Stats,
 } from "./types";
 import {post_combine} from "./post_combine";
+import {ai_filter_chunk} from "./ai_filter";
 import {UserscriptWorker} from "./userscript";
 import {do_inject} from "../injected/do_inject";
 import {
@@ -261,6 +262,22 @@ class Scheduler {
             } catch(e) {
                 this.write_failing_stats(`处理分片 ${segidx} 后执行用户脚本时出错`, e as Error, BADGE_ERR_JS);
                 return;
+            }
+        }
+
+        if(this.config.AI_FILTER) {
+            try {
+                let t1 = +new Date();
+
+                let ai_res = await ai_filter_chunk(chunk_out, this.config, segidx);
+                chunk_out = ai_res.chunk;
+                this.ongoing_stats.ai_deleted += ai_res.ai_deleted + ai_res.ai_deleted_ratio;
+
+                let t2 = +new Date();
+                this.ongoing_stats.ai_filter_time_ms += Math.ceil(t2 - t1);
+            } catch(e) {
+                // fail-open: AI filter must never break danmaku loading
+                console.warn('pakku ai_filter: error, passing chunk through unchanged', e);
             }
         }
 

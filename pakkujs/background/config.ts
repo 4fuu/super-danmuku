@@ -5,10 +5,10 @@ export const DEFAULT_CONFIG = {
     _LAST_UPDATE_TIME: 0,
     _CONFIG_VER: 5,
 
-    ADVANCED_USER: false,
+    ADVANCED_USER: true,
 
     // 弹幕合并
-    THRESHOLD: 30,
+    THRESHOLD: 20,
     MAX_DIST: 5,
     MAX_COSINE: 45,
     TRIM_PINYIN: true,
@@ -27,17 +27,17 @@ export const DEFAULT_CONFIG = {
     PROC_POOL1: false,
 
     // 显示设置
-    DANMU_MARK: 'prefix' as ('prefix' | 'suffix' | 'off'),
-    MARK_THRESHOLD: 1,
+    DANMU_MARK: 'suffix' as ('prefix' | 'suffix' | 'off'),
+    MARK_THRESHOLD: 500,
     DANMU_SUBSCRIPT: true,
-    ENLARGE: true,
-    SHRINK_THRESHOLD: 0,
-    DROP_THRESHOLD: 0,
+    ENLARGE: false,
+    SHRINK_THRESHOLD: 100,
+    DROP_THRESHOLD: 100,
     MODE_ELEVATION: true,
     REPRESENTATIVE_PERCENT: 20,
 
     // 播放器增强
-    TOOLTIP: true,
+    TOOLTIP: false,
     TOOLTIP_KEYBINDING: true,
     AUTO_DISABLE_DANMU: false,
     AUTO_DANMU_LIST: false,
@@ -45,13 +45,52 @@ export const DEFAULT_CONFIG = {
 
     // 实验室
     BREAK_UPDATE: false,
-    TAKEOVER_AIJUDGE: false,
+    TAKEOVER_AIJUDGE: true,
     SCROLL_THRESHOLD: 1200, // 0 to disable
-    USERSCRIPT: null as (string | null),
+    USERSCRIPT: `tweak_proto_view(view=>{
+ view.dmSetting.seniorModeSwitch = 3;
+});
+
+async function getChatResponse({ apiKey, baseUrl, model, messages }) {
+ const response = await fetch(\`\${baseUrl}/v1/chat/completions\`, {
+ method: 'POST',
+ headers: {
+ 'Content-Type': 'application/json',
+ 'Authorization': \`Bearer \${apiKey}\`
+ },
+ body: JSON.stringify({
+ model,
+ messages
+ })
+ });
+
+ const data = await response.json();
+
+ if (!response.ok) {
+ return "";
+ }
+
+ // 提取文本内容逻辑
+ const content = data?.choices?.[0].message?.content;
+ if (!content) {
+ return "";
+ }
+
+ return content;
+}
+` as (string | null),
+
+    // AI 弹幕过滤 (Jev / TypeSafe System One)
+    AI_FILTER: false,
+    AI_API_KEY: '' as string,
+    AI_DELETE_THRESHOLD: 0.6, // p(spam) >= this -> delete regardless of ratio
+    AI_RATIO: 0.2, // additionally drop the worst fraction per window (0 to disable), e.g. 0.2 = 1/5
+    AI_WINDOW_SECONDS: 30,
+    AI_MAX_CANDIDATES: 50,
 
     // 其他
     POPUP_BADGE: 'percent' as ('percent' | 'count' | 'dispval' | 'off'),
-    COMBINE_THREADS: 3,
+    COMBINE_THREADS: 4,
     READ_PLAYER_BLACKLIST: true,
 }
 

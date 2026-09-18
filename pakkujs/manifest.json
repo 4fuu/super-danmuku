@@ -21,7 +21,8 @@
         "declarativeNetRequestWithHostAccess"
     ],
     "host_permissions": [
-        "*://*.bilibili.com/*"
+        "*://*.bilibili.com/*",
+        "https://api.typesafe.ai/*"
     ],
     "optional_host_permissions": [
         "ws://*.bilibili.com/*",

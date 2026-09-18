@@ -2,7 +2,7 @@
 <html lang="zh">
 <head>
     <meta charset="utf-8">
-    <title>pakku :: 选项</title>
+    <title>super-danmuku :: 选项</title>
     <link rel="stylesheet" href="/assets/icomoon/icon.css">
     <style>
         body {
@@ -13,6 +13,12 @@
             font-size: 100%;
         }
         .hidden {
+            display: none;
+        }
+        body:not(.show-pakku-native) tr.pakku-native {
+            display: none;
+        }
+        body:not(.show-pakku-native) p.pakku-native {
             display: none;
         }
         .font-bili-danmu {
@@ -240,16 +246,9 @@
             <tr id="title">
                 <td></td>
                 <td>
-                    <img src="/assets/logo.png" height="128" width="128">
-                </td>
-                <td>
-                    <p><span id="logo-text">pakku <small>:: 哔哩哔哩弹幕过滤器</small></span></p>
+                    <p><span id="logo-text">super-danmuku <small>:: AI 弹幕质量过滤</small></span></p>
                     <p>
-                        <input id="show-advanced" type="checkbox">
-                        <label for="show-advanced">我是高级用户，给我显示所有设置</label>
-                        |
-                        <span id="version"></span> by @xmcp
-                        <a class="donate"><span class="icon-coin"></span>打赏</a>
+                        <span id="version"></span>
                         <a href="troubleshooting.html" target="_blank"><span class="icon-github"></span>报告问题</a>
                         <span id="version-checker"></span>
                     </p>
@@ -257,6 +256,80 @@
                 <td></td>
             </tr>
             <tr>
+                <td></td>
+                <td>AI 弹幕过滤</td>
+                <td>
+                    <p>
+                        <input id="ai-filter" type="checkbox">
+                        <label for="ai-filter">启用 AI 弹幕质量过滤（Jev）：</label>
+                        <span>在弹幕合并之后，用 AI 判断每条弹幕与视频内容的相关性，删除与内容无关的刷屏（如抽奖弹幕）</span>
+                    </p>
+                    <p>
+                        <label for="ai-api-key">API Key：</label>
+                        <input id="ai-api-key" type="password" autocomplete="off" style="width: 320px" placeholder="typesafe.ai 的 API key">
+                        <span id="ai-api-key-status"></span>
+                    </p>
+                    <p class="warning">
+                        * API key 只保存在本浏览器（chrome.storage.local），不参与云同步，也不会进入页面上下文
+                    </p>
+                    <p>
+                        <label for="ai-delete-threshold">删除阈值：</label>
+                        判定为无关刷屏的概率 ≥
+                        <input id="ai-delete-threshold" type="number" min="0" max="1" step="0.05" style="width: 70px">
+                        时直接删除
+                    </p>
+                    <p>
+                        <label for="ai-ratio">淘汰比例：</label>
+                        每个时间窗内再淘汰评分最差的
+                        <input id="ai-ratio" type="number" min="0" max="0.9" step="0.05" style="width: 70px">
+                        （0.2 即 1/5，0 为关闭）
+                    </p>
+                    <p>
+                        <label for="ai-window-seconds">时间窗：</label>
+                        <input id="ai-window-seconds" type="number" min="10" max="120" step="5" style="width: 70px">
+                        秒
+                    </p>
+                    <p class="warning">
+                        * 需要在 <a href="https://typesafe.ai" target="_blank">typesafe.ai</a> 申请 API key；失败时自动回退为普通 pakku 过滤，不影响看视频
+                    </p>
+                </td>
+                <td></td>
+            </tr>
+            <tr>
+                <td></td>
+                <td>设置管理</td>
+                <td>
+                    <p>
+                        <button type="button" id="export-config">导出设置到文件</button>
+                        <button type="button" id="import-config">从文件导入设置</button>
+                        <input id="import-config-file" type="file" accept="application/json,.json" class="hidden">
+                    </p>
+                    <p class="warning">
+                        * 导出文件包含全部设置，但<b>不包含</b> API key（需要重新填写）；导入后页面会自动刷新
+                    </p>
+                    <p>
+                        <button type="button" id="reset">重置所有设置</button>
+                    </p>
+                </td>
+                <td></td>
+            </tr>
+            <tr>
+                <td></td>
+                <td>pakku 设置</td>
+                <td>
+                    <p>
+                        <input id="show-pakku-native" type="checkbox">
+                        <label for="show-pakku-native">展开 pakku 原生的弹幕处理设置</label>
+                        <span>（弹幕合并、显示、播放器增强、实验室等，默认收拢）</span>
+                    </p>
+                    <p class="pakku-native">
+                        <input id="show-advanced" type="checkbox">
+                        <label for="show-advanced">我是高级用户，给我显示所有设置</label>
+                    </p>
+                </td>
+                <td></td>
+            </tr>
+            <tr class="pakku-native">
                 <td></td>
                 <td>弹幕合并</td>
                 <td>
@@ -328,7 +401,7 @@
                 </td>
                 <td></td>
             </tr>
-            <tr>
+            <tr class="pakku-native">
                 <td></td>
                 <td>例外设置</td>
                 <td>
@@ -383,7 +456,7 @@
                 </td>
                 <td></td>
             </tr>
-            <tr>
+            <tr class="pakku-native">
                 <td></td>
                 <td>显示设置</td>
                 <td>
@@ -465,7 +538,7 @@
                 </td>
                 <td></td>
             </tr>
-            <tr>
+            <tr class="pakku-native">
             <td></td>
             <td>播放器增强</td>
             <td>
@@ -509,7 +582,7 @@
             </td>
             <td></td>
             </tr>
-            <tr>
+            <tr class="pakku-native">
                 <td></td>
                 <td>实验室</td>
                 <td>
@@ -548,7 +621,7 @@
                 </td>
                 <td></td>
             </tr>
-            <tr>
+            <tr class="pakku-native">
                 <td></td>
                 <td>其他设置</td>
                 <td>
@@ -587,8 +660,7 @@
                         （一些面向高级用户的 <a href="#show-advanced">复杂的设置</a> <span class="advanced">现在并没有</span>被隐藏了）
                     </p>
                     <p>
-                        <button type="button" id="reset">重置所有设置</button>
-                        <button type="button" id="backup-restore">导入 / 导出设置</button>
+                        （设置的重置、导入与导出已移至顶部的「设置管理」区块）
                     </p>
                 </td>
                 <td></td>

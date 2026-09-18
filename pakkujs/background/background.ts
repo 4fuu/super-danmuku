@@ -240,6 +240,57 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     else if(msg.type==='reset_dnr_status') {
         void install_dnr_rule();
     }
+    else if(msg.type==='jev_ready') {
+        let perform = async ()=>{
+            let ready = false;
+            try {
+                let st = await chrome.storage.local.get('AI_API_KEY');
+                ready = !!st.AI_API_KEY;
+            } catch {}
+            sendResponse({ready});
+        }
+        void perform();
+        return true;
+    }
+    else if(msg.type==='jev_call') {
+        let perform = async ()=>{
+            try {
+                let key = '';
+                try {
+                    let st = await chrome.storage.local.get('AI_API_KEY');
+                    key = st.AI_API_KEY || '';
+                } catch {}
+                if(!key) {
+                    let config = await get_config();
+                    key = config.AI_API_KEY || '';
+                }
+                if(!key)
+                    throw new Error('no Jev API key configured');
+                let res = await fetch('https://api.typesafe.ai/v1/systemone', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + key,
+                    },
+                    body: JSON.stringify(msg.body),
+                });
+                if(res.status===401 || res.status===403)
+                    throw new Error('Jev API key invalid (' + res.status + ')');
+                if(res.status===429 || res.status===529)
+                    throw new Error('Jev API busy (' + res.status + ')');
+                if(!res.ok)
+                    throw new Error('Jev API error ' + res.status);
+                let data = await res.json();
+                if(!data || !data.answers)
+                    throw new Error('Jev API: malformed response');
+                sendResponse({error: null, data: data});
+            } catch(e: any) {
+                sendResponse({error: e.message || String(e)});
+            }
+        }
+        void perform();
+        return true;
+    }
     else if(msg.type==='xhr_proxy') {
         let perform = async ()=>{
             try {
