@@ -335,11 +335,14 @@ function schedule_verdict_flush() {
 }
 
 // ---- playback gate: pause the video while scoring is not safely ahead ----
-// Danmaku responses now wait for full scoring, so filtering is always complete
+// Danmaku responses wait for full scoring, so filtering is always complete
 // before the player renders them; the gate keeps playback from outrunning the
-// scorer: it pauses the video (with an overlay) whenever the playhead is about
-// to reach danmaku that are not judged yet, and resumes once a safety margin
-// of scored video length is available ahead.
+// scorer. Simplified policy: as soon as gating starts on a video (right when
+// danmaku processing begins, typically at page entry) the video is paused and
+// covered with a loading overlay; playback resumes once a safety margin of
+// scored video length leads the playhead. While gated, user pause/play state
+// is deliberately overridden (resume happens unconditionally); if the wait
+// exceeds GATE_MAX_PAUSE_MS the gate gives up (fail-open) for this video.
 let gate_pending = new Set<number>();        // absolute window indices registered but not done
 let gate_done = new Set<number>();           // windows fully scored (or nothing eligible)
 let gate_max_end_s = 0;                      // furthest second covered by any registered window
@@ -350,26 +353,12 @@ let gate_margin_s = 20;
 let gate_timer: any = null;
 let gate_no_video_ticks = 0;
 let gate_overlay: HTMLElement | null = null;
-let gate_paused_by_us = false;
-let gate_own_pause_until = 0; // pause events within this window are our own (they fire async)
-let gate_user_paused = false;
+let gate_paused_by_us = false; // we own the resume for the current pause (user state overridden)
 let gate_pause_started = 0;
+let gate_gave_up = false;
 let gate_done_seconds = 0;
 let gate_rate_samples: [number, number][] = []; // [ts, cumulative scored seconds]
 const GATE_MAX_PAUSE_MS = 60000;
-const GATE_ENGAGE_DELAY_MS = 600; // pause/resume interference waits out this settle delay
-let gate_engaged_key = '';
-let gate_engaged_at = 0;
-const gate_listener_videos = new WeakSet<object>();
-
-function gate_engage(key: string) {
-    // once per video: danmaku processing and the gate start immediately; only
-    // the actual pause (and its later resume) waits out the settle delay
-    if(gate_engaged_key === key)
-        return;
-    gate_engaged_key = key;
-    gate_engaged_at = Date.now();
-}
 
 function gate_reset_for_video(video_id: number) {
     if(gate_video_id === video_id)
@@ -380,6 +369,7 @@ function gate_reset_for_video(video_id: number) {
     gate_max_end_s = 0;
     gate_done_seconds = 0;
     gate_rate_samples = [];
+    gate_gave_up = false;
 }
 
 function gate_register(w: number, window_s: number, eligible: number) {
@@ -452,18 +442,12 @@ function gate_tick() {
             return;
         }
         gate_no_video_ticks = 0;
-        if(!gate_listener_videos.has(video)) {
-            gate_listener_videos.add(video);
-            video.addEventListener('pause', () => {
-                // our own pause() fires this event asynchronously, after the
-                // synchronous flag would have been reset; ignore events in the
-                // window right after we paused, and only treat later ones as the
-                // user pausing over us
-                if(Date.now() < gate_own_pause_until)
-                    return;
-                if(gate_paused_by_us)
-                    gate_user_paused = true;
-            });
+
+        if(gate_gave_up) { // fail-open after an over-long wait: stop gating this video
+            gate_hide_overlay();
+            gate_paused_by_us = false;
+            gate_timer = setTimeout(gate_tick, 2000);
+            return;
         }
 
         let now_s = video.currentTime || 0;
@@ -478,48 +462,37 @@ function gate_tick() {
         }
         if(!unsafe && gate_max_end_s > 0 && now_s + gate_margin_s > gate_max_end_s + 1)
             unsafe = true; // approaching the edge of loaded danmaku coverage
-        let delay_elapsed = Date.now() >= gate_engaged_at + GATE_ENGAGE_DELAY_MS;
 
         if(unsafe) {
             if(!video.paused) {
-                if(delay_elapsed) {
-                    gate_user_paused = false;
-                    gate_own_pause_until = Date.now() + 500;
-                    try {
-                        video.pause();
-                    } catch(e) {}
-                    gate_paused_by_us = true;
-                    gate_pause_started = Date.now();
-                    gate_show_overlay(video);
-                } else {
-                    // settle delay: processing and the overlay are already running,
-                    // but we do not touch the player yet
-                    gate_show_overlay(video);
-                }
-            } else if(gate_paused_by_us) {
-                let gave_up = Date.now() - gate_pause_started > GATE_MAX_PAUSE_MS;
-                if(gave_up || gate_user_paused) {
-                    gate_hide_overlay();
-                    gate_paused_by_us = false;
-                    if(!gate_user_paused) {
-                        try {
-                            video.play().catch(()=>{});
-                        } catch(e) {}
-                    }
-                } else {
-                    gate_update_overlay();
-                }
+                try {
+                    video.pause();
+                } catch(e) {}
+                gate_pause_started = Date.now();
+            } else if(!gate_paused_by_us) {
+                // already paused (entry autoplay blocked, or the user paused over us):
+                // we still take over the resume, overriding the user deliberately
+                gate_pause_started = Date.now();
             }
-            // else: paused by the user — leave it alone
+            gate_paused_by_us = true;
+            if(Date.now() - gate_pause_started > GATE_MAX_PAUSE_MS) {
+                gate_gave_up = true;
+                gate_hide_overlay();
+                gate_paused_by_us = false;
+                try {
+                    video.play().catch(()=>{});
+                } catch(e) {}
+            } else {
+                gate_show_overlay(video);
+                gate_update_overlay();
+            }
         } else {
             gate_hide_overlay();
             if(gate_paused_by_us) {
                 gate_paused_by_us = false;
-                if(!gate_user_paused) {
-                    try {
-                        video.play().catch(()=>{});
-                    } catch(e) {}
-                }
+                try {
+                    video.play().catch(()=>{});
+                } catch(e) {}
             }
         }
         gate_timer = setTimeout(gate_tick, 500);
@@ -718,10 +691,8 @@ export async function ai_filter_chunk(
     }
     let bvid = get_bvid_from_url();
 
-    // engage (once per video): danmaku processing and the gate start immediately;
-    // only the pause/resume interference on the player waits out the settle delay
-    let engage_key = 'e' + (cid || 0) + '|' + bvid;
-    gate_engage(engage_key);
+    // the playback gate starts with danmaku processing: the video is paused
+    // immediately (covered by the overlay) and resumes once scoring leads
 
     // responses normally wait for full scoring (the playback gate pauses the
     // video to cover the wait); the budget is only a safety valve against

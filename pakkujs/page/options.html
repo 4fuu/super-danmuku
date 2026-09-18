@@ -305,10 +305,10 @@
                     </p>
                     <p>
                         <input id="ai-pause-gate" type="checkbox">
-                        <label for="ai-pause-gate">追平保护：</label>
-                        <span>播放进度快追上判定进度时自动暂停视频并显示等待动画，领先超过</span>
+                        <label for="ai-pause-gate">加载门控：</label>
+                        <span>进入视频后立即暂停并显示等待动画，判定进度领先播放进度</span>
                         <input id="ai-pause-margin" type="number" min="5" max="120" step="5" style="width: 60px">
-                        秒后自动继续（用户手动暂停时绝不强行播放）
+                        秒后自动恢复播放（等待期间覆盖用户的播放/暂停操作；超过 60 秒未完成则放行不再拦截）
                     </p>
                     <p>
                         <label for="ai-max-text-len">字数上限：</label>
