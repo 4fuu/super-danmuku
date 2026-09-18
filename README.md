@@ -1,53 +1,50 @@
-[![Chrome Web Store - Version](https://img.shields.io/chrome-web-store/v/jklfcpboamajpiikgkbjcnnnnooefbhh.svg?style=flat-square)](https://chromewebstore.google.com/detail/pakku%EF%BC%9A%E5%93%94%E5%93%A9%E5%93%94%E5%93%A9%E5%BC%B9%E5%B9%95%E8%BF%87%E6%BB%A4%E5%99%A8/jklfcpboamajpiikgkbjcnnnnooefbhh)
-[![Chrome Web Store - Rating](https://img.shields.io/chrome-web-store/rating/jklfcpboamajpiikgkbjcnnnnooefbhh.svg?style=flat-square)](https://chromewebstore.google.com/detail/pakku%EF%BC%9A%E5%93%94%E5%93%A9%E5%93%94%E5%93%A9%E5%BC%B9%E5%B9%95%E8%BF%87%E6%BB%A4%E5%99%A8/jklfcpboamajpiikgkbjcnnnnooefbhh)
-/
-[![Edge Add-on - Version](https://img.shields.io/badge/dynamic/json?label=edge%20add-on&prefix=v&query=%24.version&url=https%3A%2F%2Fmicrosoftedge.microsoft.com%2Faddons%2Fgetproductdetailsbycrxid%2Flnfcfeidnipnphibahlkdhalpkpmccoc&style=flat-square)](https://microsoftedge.microsoft.com/addons/detail/pakku%EF%BC%9A%E5%93%94%E5%93%A9%E5%93%94%E5%93%A9%E5%BC%B9%E5%B9%95%E8%BF%87%E6%BB%A4%E5%99%A8/lnfcfeidnipnphibahlkdhalpkpmccoc)
-[![Edge Add-on - Rating](https://img.shields.io/badge/dynamic/json?label=rating&suffix=/5&color=&query=%24.averageRating&url=https%3A%2F%2Fmicrosoftedge.microsoft.com%2Faddons%2Fgetproductdetailsbycrxid%2Flnfcfeidnipnphibahlkdhalpkpmccoc&style=flat-square&color=4c1)](https://microsoftedge.microsoft.com/addons/detail/pakku%EF%BC%9A%E5%93%94%E5%93%A9%E5%93%94%E5%93%A9%E5%BC%B9%E5%B9%95%E8%BF%87%E6%BB%A4%E5%99%A8/lnfcfeidnipnphibahlkdhalpkpmccoc)
-/
-[![Mozilla Add-on - Version](https://img.shields.io/amo/v/pakkujs.svg?style=flat-square)](https://addons.mozilla.org/zh-CN/firefox/addon/pakkujs?src=external-shield)
-[![Mozilla Add-on - Rating](https://img.shields.io/amo/rating/pakkujs.svg?style=flat-square)](https://addons.mozilla.org/zh-CN/firefox/addon/pakkujs?src=external-shield)
+# super-danmuku
 
-#### [→ 点我安装 ←](https://s.xmcp.ltd/pakkujs/?src=readme_1) （支持 Chrome、Edge、Firefox）
+B 站弹幕过滤器，基于 xmcp 的 pakku.js（GPLv3）修改而成，在其弹幕去重合并的基础上新增了 AI 弹幕质量过滤。
 
-![logo](https://cloud.githubusercontent.com/assets/6646473/17503651/20b41376-5e24-11e6-8829-6b8a0ccd47a9.png)
-# pakku.js
+> 本项目是个人维护的 fork，与原项目相互独立；原项目的商店发布与下载渠道与本 fork 无关，此处不再列出。所有修改内容见下文。
 
-自动合并B站视频中刷屏弹幕的浏览器插件，让您免受各种带节奏弹幕的刷屏之苦。
+## 在 pakku.js 之上新增的功能
 
-↓ 《千绪的通学路》第5话
+### AI 弹幕质量过滤（Jev）
 
-![](https://s.xmcp.ltd/pakkujs/comm/1.png)
+在 pakku 的合并去重之后，增加了一个由 [TypeSafe Jev](https://typesafe.ai) 驱动的语义过滤层：
 
-↓  哔哩哔哩拜年祭 2018，可见“弹幕密度分析图”功能
+- **按时间窗判断**：视频按 30 秒（可调）切分为时间窗，窗口内合并后的弹幕簇作为候选项，一次请求并行评分。
+- **窗口级时效判断**：结合视频标题/UP主/标签和当前窗口的 **AI 字幕**（`ai-zh` 轨道，需在浏览器登录 B 站），判断弹幕是否与"此刻的画面内容"相关。例如 UP 主宣布抽奖时允许应景的求中奖弹幕（pakku 会将其合并为一条 `[xN]` 展示），其余时间全片的同类刷屏一律删除。
+- **两层删除策略**：判定为无关刷屏的概率超过阈值（默认 0.6）直接删除；存活弹幕中再按质量评分淘汰每个窗口最差的一档（默认 1/5，可关）。
+- **统计全部在代码层完成**（簇计数、时间跨度、独立用户数），模型只做语义判断；所有失败场景 fail-open，自动回退为普通 pakku 过滤，不影响观看。
+- 成本极低：约每百万输入 token $0.042，一小时视频通常不到 $0.03。
 
-![](https://s.xmcp.ltd/pakkujs/comm/2.png)
+### 设置与隐私
 
-↓  【炮姐/AMV】我永远都会守护在你的身边！(av810872)，可见“自动调整弹幕大小”功能
+- 设置页重构：AI 过滤设置置于一级菜单，pakku 原生设置收拢在开关之后。
+- **API key 只保存在本浏览器**（`chrome.storage.local`），不参与云同步；API 调用全部经扩展后台代理，key 不进入页面上下文。
+- 设置导入/导出改为文件下载/文件导入，导出文件不包含 API key。
+- 弹窗统计中新增「AI 判定无关」删除条数（按合并簇的真实弹幕条数计）。
 
-![](https://s.xmcp.ltd/pakkujs/comm/3.png)
+### 开发工具（tools/）
 
-↓  《NEW GAME!》第8话，可见“弹幕信息显示框”功能
+- `bili_login.py`：B 站扫码登录脚本，获取测试用登录凭证（支持 SOCKS 代理）。
+- `fetch_subtitle.py`：拉取视频的 AI 字幕轨道，用于离线评测字幕上下文的效果。
 
-![](https://s.xmcp.ltd/pakkujs/comm/4.png)
+## 从源码构建
 
-↓  电磁炮真是太可爱了(av314)，可见统计信息显示
+```bash
+npm install
+npm run build:chrome   # 产物在 dist/C，可在 chrome://extensions 以"加载已解压的扩展程序"安装
+```
 
-![](https://s.xmcp.ltd/pakkujs/comm/5.png)
+需要 API key：在 [typesafe.ai](https://typesafe.ai) 申请，填入本扩展设置页。
 
-### 用户脚本
+## 用户脚本
 
-可以通过 JavaScript 代码来修改弹幕内容，实现深度自定义 pakku 的功能或者临时调整弹幕样式。
+pakku 原生的用户脚本机制完整保留，详见 [用户脚本文档](userscript_docs/README.md)。
 
-详见 [用户脚本文档](userscript_docs/README.md)。
+## 浏览器兼容性
 
-### 浏览器兼容性
+与原项目一致：Chrome 和 Edge ≥ 99，Firefox ≥ 113。
 
-目前版本兼容 Chrome 和 Edge 版本 ≥99，以及 Firefox 版本 ≥113。
+## License
 
-未来的浏览器兼容性目标为 Chrome 和 Edge 最近 24 个版本，Firefox 最近 12 个版本。
-
-### License
-
-[GPLv3](LICENSE.txt)
-
-#### [→ 点我安装 ←](https://s.xmcp.ltd/pakkujs/?src=readme_2) （支持 Chrome、Edge、Firefox）
+[GPLv3](LICENSE.txt)（继承自 pakku.js）
