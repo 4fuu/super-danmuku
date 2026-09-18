@@ -60,13 +60,20 @@ def main():
     while time.time() < deadline:
         pr = s.get('https://passport.bilibili.com/x/passport-login/web/qrcode/poll',
                    params={'qrcode_key': qrcode_key}, timeout=15).json()
-        code, msg = pr.get('code'), pr.get('message', '')
+        data = pr.get('data') or {}
+        # QR status lives in data.code (86038 expired / 86090 scanned / 86101 not scanned / 0 ok);
+        # the outer code only reflects transport success
+        code = data.get('code', pr.get('code'))
+        msg = data.get('message') or pr.get('message') or ''
         if code != last:
             print(f'[poll] {code} {msg}', flush=True)
             last = code
         if code == 0:
-            data = pr['data']
             cookies = {c.name: c.value for c in s.cookies}
+            if 'SESSDATA' not in cookies:
+                print('outer code 0 but no SESSDATA, still waiting', flush=True)
+                time.sleep(2)
+                continue
             out = {
                 'cookies': cookies,
                 'refresh_token': data.get('refresh_token', ''),
