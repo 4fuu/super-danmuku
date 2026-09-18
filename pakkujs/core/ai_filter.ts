@@ -104,14 +104,14 @@ function with_timeout<T>(p: Promise<T>, ms: int, fallback: T): Promise<T> {
 }
 
 const WORST_CRITERIA = {
-    true: 'Lottery-begging (asking to win a giveaway), pure repeated characters, off-topic chatter, or flooding text unrelated to the video subject. IMPORTANT: repetitive short begging messages sent by many users at once (e.g. 中, 中中中, 抽我, 求中奖) are spam EVEN WHEN the video is currently discussing its own giveaway or the message matches what is on screen right now: flooding the screen with begging is spam regardless of momentary topical relevance. Judge by whether the message is substantive content, not by whether its topic momentarily matches the screen.',
-    false: 'Substantively related to the video content: meaningful on-topic reactions, jokes about what is shown, the uploader\'s memes, questions or opinions about the video subject.',
+    true: 'Spam for this window: begging for a giveaway (e.g. 中, 抽我, 求中奖) when the video is NOT currently discussing its giveaway in this time window; pure repeated characters with no meaning; off-topic chatter unrelated to the video subject. Judge topical relevance against `danmaku_window.subtitle_in_window` (what is being said on screen right now) and the video metadata.',
+    false: 'Acceptable for this window: reactions that match the current moment, including giveaway-related messages WHILE the video is actually announcing or discussing its own giveaway in this window; jokes about what is shown; the uploader\'s memes; questions or opinions about the video subject.',
 };
 
 const QUALITY_LEVELS = [
-    'Spam or unrelated: lottery-begging (asking to be picked in a giveaway), pure repeated characters, off-topic content',
+    'Spam for this moment of the video: giveaway-begging while the video is not currently discussing its giveaway in this window, pure repeated characters, or off-topic content',
     'Generic filler reaction with little content, e.g. single characters, 哈哈哈, 666, 111',
-    'Genuine on-topic reaction, joke or comment about the video content',
+    'Genuine on-topic reaction to the current moment, including timely giveaway hype while the video is announcing its own giveaway',
     'High-value content: informative observation, useful question or opinion about the video subject',
 ];
 
@@ -135,7 +135,7 @@ function build_request(video_key: string, window_lo: int, window_hi: int, segidx
     cands.forEach((_, i) => {
         questions['worst_' + i] = {
             type: 'noul',
-            instructions: `Is \`candidates[${i}].text\` low-quality danmaku spam that is unrelated to what this video is about?`,
+            instructions: `Is \`candidates[${i}].text\` spam for this window of the video?`,
             criteria: WORST_CRITERIA,
         };
         questions['qual_' + i] = {
