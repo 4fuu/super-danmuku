@@ -1,4 +1,5 @@
 import {DanmuChunk, DanmuClusterOutput, DanmuObject, int, LocalizedConfig} from "./types";
+import * as combine_worker from "./combine_worker";
 
 type InitArgsType = [ArrayBuffer];
 type RunArgsType = [DanmuChunk<DanmuObject>, DanmuChunk<DanmuObject>, LocalizedConfig];
@@ -65,7 +66,9 @@ export class WorkerMaker {
 
     async _spawn_simulated(): Promise<WebWorkerLike> {
         if(!this.simulated_module) {
-            this.simulated_module = await import(WORKER_URL);
+            // statically linked fallback module (a dynamic import(chrome.runtime.getURL(..))
+            // is blocked by page CSP in Chrome content scripts and flagged by AMO's linter)
+            this.simulated_module = combine_worker as any;
         }
 
         let ret = {

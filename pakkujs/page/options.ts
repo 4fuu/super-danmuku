@@ -150,18 +150,8 @@ async function ver_check() {
                     update_url,
                 );
 
-                // let the browser to auto update
-                if(chrome.runtime.requestUpdateCheck) {
-                    chrome.runtime.requestUpdateCheck((status, details)=>{
-                        console.log('request update check ', status, details);
-                        if(status === 'update_available')
-                            show_note(
-                                'pakku_version',
-                                `你正在使用 super-danmuku ${version}。重启浏览器来自动更新到 ${details?.version || '新版本'}，或者点击此处手动下载。`,
-                                update_url,
-                            );
-                    });
-                }
+                // note: no runtime.requestUpdateCheck here — Firefox does not implement it
+                // and both stores auto-update on their own; the note above links the release
             } else {
                 id('version-checker').textContent = '✓ 是最新版本';
             }
