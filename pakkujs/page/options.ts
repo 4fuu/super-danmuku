@@ -272,6 +272,31 @@ id('import-config-file').addEventListener('change', function(this: HTMLInputElem
         void import_config_from_file(files[0]);
 });
 
+id('ai-clear-cache').addEventListener('click', ()=>{
+    if(!confirm('清除本地缓存的全部弹幕判定数据？\n清除后已打开的视频页面将重新判定。'))
+        return;
+    void chrome.storage.local.get('ai_verdicts', (st: any) => {
+        const store = st && st.ai_verdicts;
+        const n = store ? Object.keys(store).length : 0;
+        chrome.storage.local.remove('ai_verdicts', () => {
+            // also drop the in-memory copies held by open tabs (the content
+            // script listens for ai_clear_cache); tabs without it just lastError out
+            try {
+                chrome.tabs.query({}, (tabs: chrome.tabs.Tab[]) => {
+                    for(const t of tabs || []) {
+                        if(t.id === undefined)
+                            continue;
+                        try {
+                            chrome.tabs.sendMessage(t.id, {type: 'ai_clear_cache'}, () => void chrome.runtime.lastError);
+                        } catch(e) {}
+                    }
+                });
+            } catch(e) {}
+            id('ai-clear-cache-status').textContent = n > 0 ? `（已清除 ${n} 条）` : '（缓存为空）';
+        });
+    });
+});
+
 function apply_pakku_native_toggle() {
     if(id('show-pakku-native').checked)
         document.body.classList.add('show-pakku-native');

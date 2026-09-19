@@ -405,6 +405,33 @@ function schedule_verdict_flush() {
     }, 2000);
 }
 
+// ---- cache clearing: the options page broadcasts ai_clear_cache to open tabs ----
+// drops both cache levels (in-memory L1 + persistent verdicts); scoring that is
+// still in flight on the current page may re-persist a few verdicts afterwards
+export function ai_clear_caches() {
+    cache_video_key = '';
+    ai_cache.clear();
+    if(verdict_flush_timer !== null) {
+        clearTimeout(verdict_flush_timer);
+        verdict_flush_timer = null;
+    }
+    verdict_dirty = false;
+    verdict_store = null; // next use re-reads the (now empty) storage
+    try {
+        chrome.storage.local.remove(VERDICT_STORE_KEY);
+    } catch(e) {}
+}
+
+try {
+    if(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage)
+        chrome.runtime.onMessage.addListener((msg: any, _sender: any, sendResponse: (r: any) => void) => {
+            if(msg && msg.type === 'ai_clear_cache') {
+                ai_clear_caches();
+                try { sendResponse({ok: true}); } catch(e) {}
+            }
+        });
+} catch(e) {}
+
 // ---- playback gate: pause the video while scoring is not safely ahead ----
 // Danmaku responses wait for full scoring, so filtering is always complete
 // before the player renders them; the gate keeps playback from outrunning the
