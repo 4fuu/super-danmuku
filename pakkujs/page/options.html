@@ -276,18 +276,13 @@
                     </p>
                     <p>
                         <label for="ai-ratio">淘汰比例：</label>
-                        每个时间窗内再淘汰评分最差的
+                        每个 5 秒时间窗内再淘汰评分最差的
                         <input id="ai-ratio" type="number" min="0" max="0.9" step="0.05" style="width: 70px">
                         （0.2 即 1/5，0 为关闭）
                     </p>
                     <p>
-                        <label for="ai-window-seconds">时间窗：</label>
-                        <input id="ai-window-seconds" type="number" min="3" max="120" step="1" style="width: 70px">
-                        秒（窗口越小判定越快，请求越多）
-                    </p>
-                    <p>
                         <label for="ai-subtitle-padding">字幕上下文：</label>
-                        窗口前后各附加
+                        每个请求的时间段前后各附加
                         <input id="ai-subtitle-padding" type="number" min="0" max="30" step="1" style="width: 70px">
                         秒的字幕（0 为不附加）
                     </p>

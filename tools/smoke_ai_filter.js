@@ -109,7 +109,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process.exit(1); } };
 
 (async () => {
-    // ===== scenario 1: correctness (30s windows, padding on, immediate responses) =====
+    // ===== scenario 1: correctness (5s semantic windows packed into requests, padding on, immediate responses) =====
     const objs = [
         mkobj(1000, '中中中', 500),
         mkobj(2000, '抽我抽我', 60),
@@ -131,7 +131,7 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
 
     const config = {
         AI_FILTER: true, AI_API_KEY: 'test', AI_DELETE_THRESHOLD: 0.6,
-        AI_RATIO: 0.2, AI_WINDOW_SECONDS: 30, AI_MAX_CANDIDATES: 50,
+        AI_RATIO: 0.2, AI_MAX_CANDIDATES: 50,
         AI_SUBTITLE_PADDING_SECONDS: 5, AI_CONCURRENCY: 4, AI_BUDGET_MS: 6000,
         AI_PAUSE_GATE: false, // gate needs a real <video>; exercised manually
         AI_VERDICT_CACHE: true, // scenario 5 covers the persistence path explicitly
@@ -142,17 +142,20 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
 
     console.log(`scenario1: windows=${res.ai_windows}, deleted(spam)=${res.ai_deleted}, deleted(ratio)=${res.ai_deleted_ratio}`);
     for(const call of jev_calls)
-        console.log('  window:', call.state.danmaku_window.time_range_seconds, 'candidates:', call.state.candidates.length);
+        console.log('  request:', call.state.danmaku_window.time_range_seconds, 'candidates:', call.state.candidates.length);
 
     const kept = new Set(res.chunk.objs.map(o => o.content));
-    assert(jev_calls.length === 2, 'two windows scored (tiny window skipped)');
-    // subtitle context must be present, sliced to the padded window range
-    const w0 = jev_calls.find(c => c.state.danmaku_window.time_range_seconds === '0~30');
-    assert(w0 && w0.state.danmaku_window.subtitle_in_window.includes('摄像头'), 'window 0~30s subtitle slice includes camera line');
-    assert(w0 && w0.state.danmaku_window.subtitle_in_window.includes('字幕填充探针行'), 'subtitle padding pulls the 31-45s line into window 0~30s');
-    assert(w0 && !w0.state.danmaku_window.subtitle_in_window.includes('电池续航'), 'window 0~30s excludes later subtitle');
-    const w2 = jev_calls.find(c => c.state.danmaku_window.time_range_seconds === '90~120');
-    assert(w2 && w2.state.danmaku_window.subtitle_in_window === '', 'window 90~120s has no subtitle (past 60s)');
+    assert(jev_calls.length === 2, 'two requests scored (tiny windows skipped, judged windows packed)');
+    // subtitle context must be present, sliced to the padded request range
+    const w0 = jev_calls.find(c => c.state.danmaku_window.time_range_seconds === '0~10');
+    assert(w0 && w0.state.candidates.length === 7, 'adjacent 5s windows 0~5 and 5~10 packed into one request (7 candidates)');
+    assert(w0 && w0.state.candidates[0].t_seconds === 1, 'candidates carry their own t_seconds');
+    assert(w0 && w0.state.danmaku_window.subtitle_in_window.includes('大家好'), 'request 0~10s subtitle slice includes the opening line');
+    assert(w0 && w0.state.danmaku_window.subtitle_in_window.includes('摄像头'), 'subtitle padding pulls the 12-28s line into request 0~10s');
+    assert(w0 && !w0.state.danmaku_window.subtitle_in_window.includes('字幕填充探针行'), 'request 0~10s padding stops before the 31-45s line');
+    assert(w0 && !w0.state.danmaku_window.subtitle_in_window.includes('电池续航'), 'request 0~10s excludes later subtitle');
+    const w2 = jev_calls.find(c => c.state.danmaku_window.time_range_seconds === '100~105');
+    assert(w2 && w2.state.danmaku_window.subtitle_in_window === '', 'request 100~105s has no subtitle (past 60s)');
     assert(res.ai_deleted === 590, `raw deleted count sums peers (got ${res.ai_deleted})`);
     assert(!kept.has('中中中') && !kept.has('抽我抽我') && !kept.has('求中奖'), 'spam deleted by threshold');
     assert(kept.has('居然有6级的防尘？') && kept.has('这是iOS，想都别想'), 'good kept');
@@ -182,12 +185,13 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     const res2b = await mod.ai_filter_chunk(chunk2, cfg2, 2);
     const dt2 = Date.now() - t2;
     console.log(`scenario2: shipped in ${dt2}ms with ${jev_calls.length} calls made at ship`);
-    // concurrency=1 and 4 windows x 300ms => full run needs 1200ms; budget must ship at ~500ms
-    assert(dt2 >= 450 && dt2 < 900, `budget ships early (elapsed ${dt2}ms, full run would be 1200ms)`);
+    // concurrency=1: windows 0/30/60s pack into request 1, the 90s window becomes
+    // request 2; full run needs 600ms; budget must ship at ~500ms
+    assert(dt2 >= 450 && dt2 < 900, `budget ships early (elapsed ${dt2}ms, full run would be 600ms)`);
     assert(res2b.chunk.objs.length === objs2.length, 'nothing deleted while unjudged (all good texts)');
 
     await sleep(900); // let the background scoring finish
-    assert(jev_calls.length === 4, `background scoring completes all windows (got ${jev_calls.length})`);
+    assert(jev_calls.length === 2, `background scoring completes all packs (got ${jev_calls.length})`);
 
     // reload -> fully cached, instant
     jev_calls = [];
@@ -209,7 +213,8 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     const cfg3 = {...config, AI_CONCURRENCY: 2, AI_BUDGET_MS: 20000};
     const res3 = await mod.ai_filter_chunk({objs: objs3, extra: {proto_segidx: 3}}, cfg3, 3);
     console.log(`scenario3: windows=${res3.ai_windows} calls=${jev_calls.length} max_inflight=${max_inflight}`);
-    assert(jev_calls.length === 6, 'all six windows scored');
+    assert(res3.ai_windows === 6, 'all six semantic windows judged');
+    assert(jev_calls.length === 2, 'windows packed into two requests (span cap 90s)');
     assert(max_inflight <= 2, `concurrency limit respected (max_inflight=${max_inflight})`);
 
     // ===== scenario 4: 429 exponential backoff retries, then success =====
@@ -292,7 +297,7 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     const dt7 = Date.now() - t7;
     console.log(`scenario7: shipped in ${dt7}ms deleted=${res7.ai_deleted} kept=${res7.chunk.objs.length}`);
     assert(dt7 >= 90, `response waits for full judgment (elapsed ${dt7}ms >= 100ms of API latency)`);
-    assert(jev_calls.length === 3, `every window judged before shipping (got ${jev_calls.length})`);
+    assert(res7.ai_windows === 3 && jev_calls.length === 1, `all windows judged before shipping (${res7.ai_windows} windows in ${jev_calls.length} packed request)`);
     assert(res7.ai_deleted === 18 && res7.chunk.objs.length === 0, `all spam filtered before shipping (deleted ${res7.ai_deleted})`);
 
     // ===== scenario 8: length limit skips judgement, passes through =====
@@ -335,7 +340,7 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     global.document.createElement = () => ({style: {}, id: '', textContent: '', innerHTML: '', appendChild() {}, remove() {}, querySelector: () => null});
     global.document.head = {appendChild() {}};
 
-    const cfg9 = {...config, AI_PAUSE_GATE: true, AI_WINDOW_SECONDS: 5};
+    const cfg9 = {...config, AI_PAUSE_GATE: true};
     // all windows score instantly: the gate must never have paused for them
     const objs9 = [];
     for(let t = 0; t < 30; t += 5)
@@ -371,17 +376,17 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
         }
         return orig_send(msg, cb);
     };
-    // seg A covers 0~6min (playhead sits at 0:29.5 inside it), seg B covers 6~12min;
+    // seg A covers 0~12min (playhead sits at 0:29.5 inside it), seg B covers 60min+;
     // B is processed FIRST (simulating a later segment finishing combine first).
     // With concurrency 4 and all of B queued ahead of A, the playhead-adjacent
-    // windows of A must still be among the first requests sent.
-    const cfg10 = {...config, AI_CONCURRENCY: 4, AI_WINDOW_SECONDS: 30, AI_PAUSE_GATE: false};
+    // packs of A must still be among the first requests sent.
+    const cfg10 = {...config, AI_CONCURRENCY: 4, AI_PAUSE_GATE: false};
     const mk_windows = (base_s, tag) => {
         const objs = [];
-        for(let t = 0; t < 360; t += 30) { // 12 windows, 3 cands each
-            objs.push(mkobj((base_s + t + 1) * 1000, tag + '甲', 3));
-            objs.push(mkobj((base_s + t + 6) * 1000, tag + '乙', 3));
-            objs.push(mkobj((base_s + t + 11) * 1000, tag + '丙', 3));
+        for(let t = 0; t < 720; t += 30) { // 24 windows -> 8 packs of 3 windows (span 65s), 3 cands each
+            objs.push(mkobj((base_s + t + 0.5) * 1000, tag + '甲', 3));
+            objs.push(mkobj((base_s + t + 1.5) * 1000, tag + '乙', 3));
+            objs.push(mkobj((base_s + t + 2.5) * 1000, tag + '丙', 3));
         }
         return objs;
     };
@@ -393,28 +398,28 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     await pB; // full judgment: both segments settle before the next scenario
     await sleep(400); // let the last mocked responses land
     global.chrome.runtime.sendMessage = orig_send;
-    console.log(`scenario10: first 8 windows sent: ${call_order.slice(0, 8).join(', ')}`);
+    console.log(`scenario10: first 8 requests sent: ${call_order.slice(0, 8).join(', ')}`);
     assert(call_order.length >= 8, 'requests were sent');
-    const early = call_order.slice(0, 8).filter(x => x === '0~30' || x === '30~60' || x === '60~90');
-    assert(early.length >= 3, `playhead-adjacent windows are sent early (got [${call_order.slice(0, 8).join(', ')}])`);
+    const early = call_order.slice(0, 8).filter(x => x === '0~65' || x === '90~155' || x === '180~245');
+    assert(early.length >= 3, `playhead-adjacent packs are sent early (got [${call_order.slice(0, 8).join(', ')}])`);
 
     // ===== scenario 11: proactive rate limiting paces request starts =====
-    // instant responses would let 8 concurrent windows burst all at once; the
+    // instant responses would let 8 concurrent packs burst all at once; the
     // token bucket (15/s, burst 4) must smooth the 10 starts to ~400ms instead
     jev_calls = [];
     jev_delay_ms = 0;
-    const cfg11 = {...config, AI_WINDOW_SECONDS: 5, AI_PAUSE_GATE: false, AI_CONCURRENCY: 8, AI_BUDGET_MS: 20000};
+    const cfg11 = {...config, AI_PAUSE_GATE: false, AI_CONCURRENCY: 8, AI_BUDGET_MS: 20000};
     const objs11 = [];
-    for(let w = 0; w < 10; w++) {
-        objs11.push(mkobj(w * 5000 + 500, '限速窗口甲', 3));
-        objs11.push(mkobj(w * 5000 + 1500, '限速窗口乙', 3));
-        objs11.push(mkobj(w * 5000 + 2500, '限速窗口丙', 3));
+    for(let w = 0; w < 10; w++) { // 120s spacing: every window exceeds the 90s pack span cap -> one pack each
+        objs11.push(mkobj(w * 120000 + 500, '限速窗口甲', 3));
+        objs11.push(mkobj(w * 120000 + 1500, '限速窗口乙', 3));
+        objs11.push(mkobj(w * 120000 + 2500, '限速窗口丙', 3));
     }
     const t11 = Date.now();
     const res11 = await mod.ai_filter_chunk({objs: objs11, extra: {proto_segidx: 30}}, cfg11, 30);
     const dt11 = Date.now() - t11;
-    console.log(`scenario11: 10 windows judged in ${dt11}ms (paced, not burst)`);
-    assert(res11.ai_windows === 10, 'all windows judged');
+    console.log(`scenario11: 10 packs judged in ${dt11}ms (paced, not burst)`);
+    assert(res11.ai_windows === 10 && jev_calls.length === 10, 'all windows judged, one request each');
     // 15 req/s with burst 4: 10 starts span at least (10-4)/15 = 400ms
     assert(dt11 >= 300, `request starts are paced under the rate limit (${dt11}ms for 10 windows)`);
     assert(dt11 < 2000, `pacing is proportional, not serialized (${dt11}ms)`);

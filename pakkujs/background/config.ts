@@ -85,9 +85,8 @@ async function getChatResponse({ apiKey, baseUrl, model, messages }) {
     AI_API_KEY: '' as string,
     AI_DELETE_THRESHOLD: 0.6, // p(spam) >= this -> delete regardless of ratio
     AI_RATIO: 0.6, // additionally drop the worst fraction per window (0 to disable)
-    AI_WINDOW_SECONDS: 5,
-    AI_MAX_CANDIDATES: 50,
-    AI_SUBTITLE_PADDING_SECONDS: 5, // subtitle context: +/- this many seconds around each window
+    AI_MAX_CANDIDATES: 50, // per-request candidate cap; adjacent 5s windows are packed up to this
+    AI_SUBTITLE_PADDING_SECONDS: 5, // subtitle context: +/- this many seconds around each request's time range
     // official limits: 250k tokens/s, 1200 req/min (20 req/s); request starts are
     // paced at 15/s by the client-side rate limiter, so 8 concurrent (~4-5 req/s
     // at ~2s per request) always stays under the quota

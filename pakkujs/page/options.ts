@@ -379,7 +379,6 @@ function loadconfig() {
     id('ai-filter').checked = config.AI_FILTER;
     id('ai-delete-threshold').value = config.AI_DELETE_THRESHOLD;
     id('ai-ratio').value = config.AI_RATIO;
-    id('ai-window-seconds').value = config.AI_WINDOW_SECONDS;
     id('ai-subtitle-padding').value = config.AI_SUBTITLE_PADDING_SECONDS;
     id('ai-concurrency').value = config.AI_CONCURRENCY;
     id('ai-budget').value = config.AI_BUDGET_MS;
@@ -626,7 +625,6 @@ function update(this: HTMLInputElement) {
     config.AI_FILTER = id('ai-filter').checked;
     config.AI_DELETE_THRESHOLD = safe_float(id('ai-delete-threshold').value, 0, 1, DEFAULT_CONFIG.AI_DELETE_THRESHOLD);
     config.AI_RATIO = safe_float(id('ai-ratio').value, 0, 0.9, DEFAULT_CONFIG.AI_RATIO);
-    config.AI_WINDOW_SECONDS = safe_int(id('ai-window-seconds').value, 3, 120, DEFAULT_CONFIG.AI_WINDOW_SECONDS);
     config.AI_SUBTITLE_PADDING_SECONDS = safe_int(id('ai-subtitle-padding').value, 0, 30, DEFAULT_CONFIG.AI_SUBTITLE_PADDING_SECONDS);
     config.AI_CONCURRENCY = safe_int(id('ai-concurrency').value, 1, 32, DEFAULT_CONFIG.AI_CONCURRENCY);
     config.AI_BUDGET_MS = safe_int(id('ai-budget').value, 5000, 600000, DEFAULT_CONFIG.AI_BUDGET_MS);
@@ -665,7 +663,7 @@ for(let elem of [
     // 实验室
     'break-update', 'takeover-aijudge', 'scroll-threshold',
     // AI 弹幕过滤
-    'ai-filter', 'ai-api-key', 'ai-delete-threshold', 'ai-ratio', 'ai-window-seconds',
+    'ai-filter', 'ai-api-key', 'ai-delete-threshold', 'ai-ratio',
     'ai-subtitle-padding', 'ai-concurrency', 'ai-budget', 'ai-pause-gate',
     'ai-max-text-len', 'ai-verdict-cache',
     // 其他

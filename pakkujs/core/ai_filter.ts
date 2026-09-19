@@ -37,6 +37,22 @@ interface Candidate {
     span_ms: int; // temporal span of the cluster inside this window
 }
 
+// semantic window: ratio-ranking scope, exemption unit and verdict-cache key
+interface JudgedWindow {
+    w: int;
+    lo_s: int;
+    hi_s: int;
+    cands: Candidate[]; // count-desc: spam signature first
+}
+
+// request pack: adjacent judged windows sharing one Jev request
+interface RequestPack {
+    lo_s: int;
+    hi_s: int;
+    count: int; // candidates packed so far
+    entries: {win: JudgedWindow, part: Candidate[]}[];
+}
+
 // per-video cache: window key -> array of {p_worst, score} aligned with candidate order
 const ai_cache = new Map<string, Map<string, {p_worst: number, score: number, text: string}[]>>();
 let cache_video_key = '';
@@ -116,6 +132,16 @@ async function rl_acquire(): Promise<void> {
 const AI_RETRIES = 5; // exponential backoff: 500ms * 2^n, at least Retry-After when given
 const AI_RETRY_BASE_MS = 500;
 
+// ---- semantic window & request packing ----
+// the window (5s) is only a semantic unit now: ratio-ranking scope, tiny-window
+// exemption and the verdict-cache key. Requests no longer map 1:1 to windows:
+// adjacent judged windows are packed into one request while the request stays
+// small (<= AI_MAX_CANDIDATES candidates) and temporally tight (<= PACK_SPAN_S),
+// so sparse videos stop paying one request per half-empty window
+const SEMANTIC_WINDOW_S = 5;
+const SEMANTIC_WINDOW_MS = SEMANTIC_WINDOW_S * 1000;
+const PACK_SPAN_S = 90; // hard cap on one request's subtitle time range
+
 function with_timeout<T>(p: Promise<T>, ms: int, fallback: T): Promise<T> {
     return new Promise((resolve) => {
         let done = false;
@@ -153,7 +179,7 @@ const QUALITY_LEVELS = [
     'High-value content: informative observation, useful question or opinion about the video subject',
 ];
 
-function build_request(video_key: string, window_lo: int, window_hi: int, segidx: int, sub_pad_s: int, cands: {text: string, count: int, span_s: number}[]) {
+function build_request(video_key: string, pack_lo: int, pack_hi: int, segidx: int, sub_pad_s: int, cands: {text: string, count: int, span_s: number, t_s: number}[]) {
     const state: any = {
         video: {
             title: video_ctx.title || '',
@@ -163,50 +189,51 @@ function build_request(video_key: string, window_lo: int, window_hi: int, segidx
         },
         danmaku_window: {
             segment_index: segidx,
-            time_range_seconds: window_lo + '~' + window_hi,
-            subtitle_in_window: slice_subtitle(window_lo - sub_pad_s, window_hi + sub_pad_s),
+            time_range_seconds: pack_lo + '~' + pack_hi,
+            subtitle_in_window: slice_subtitle(pack_lo - sub_pad_s, pack_hi + sub_pad_s),
         },
-        candidates: cands.map((c, i) => ({i, text: c.text, merged_count: c.count, span_seconds: c.span_s})),
-        stats_note: 'merged_count = how many danmaku were merged into this text after de-duplication; span_seconds = how long this text kept appearing inside this window',
+        candidates: cands.map((c, i) => ({i, text: c.text, t_seconds: c.t_s, merged_count: c.count, span_seconds: c.span_s})),
+        stats_note: 't_seconds = when this danmaku appears inside time_range_seconds; merged_count = how many danmaku were merged into this text after de-duplication; span_seconds = how long this text kept appearing',
     };
     const questions: any = {};
-    cands.forEach((_, i) => {
+    cands.forEach((c, i) => {
         questions['worst_' + i] = {
             type: 'noul',
-            instructions: `Is \`candidates[${i}].text\` spam for this window of the video?`,
+            instructions: `Is \`candidates[${i}].text\` at t_seconds=${c.t_s} spam for this moment of the video?`,
             criteria: WORST_CRITERIA,
         };
         questions['qual_' + i] = {
             type: 'score',
-            instructions: `Rate the quality of the danmaku \`candidates[${i}].text\` for a viewer of this video.`,
+            instructions: `Rate the quality of the danmaku \`candidates[${i}].text\` at t_seconds=${c.t_s} for a viewer of this video.`,
             criteria: QUALITY_LEVELS,
         };
     });
     return {state, model: 'jev-latest', questions};
 }
 
-async function score_batch(video_key: string, window_lo: int, window_hi: int, segidx: int, sub_pad_s: int, batch: Candidate[], cid: int, use_verdicts: boolean): Promise<{p_worst: number, score: number, text: string}[]> {
-    const cands = batch.map(c => ({
-        text: c.obj.content,
-        count: c.count,
-        span_s: Math.round(c.span_ms / 100) / 10,
+async function score_pack(video_key: string, pack_lo: int, pack_hi: int, segidx: int, sub_pad_s: int, items: {cand: Candidate, w_lo_s: int}[], cid: int, use_verdicts: boolean): Promise<{p_worst: number, score: number, text: string}[]> {
+    const cands = items.map(it => ({
+        text: it.cand.obj.content,
+        count: it.cand.count,
+        span_s: Math.round(it.cand.span_ms / 100) / 10,
+        t_s: Math.round(it.cand.obj.time_ms / 100) / 10,
     }));
     const cache = get_window_cache(video_key);
-    const cache_key = hash_str(JSON.stringify([window_lo, segidx, cands]));
+    const cache_key = hash_str(JSON.stringify([pack_lo, segidx, cands]));
     const hit = cache.get(cache_key);
     if(hit)
         return hit;
 
     // L2: persistent verdicts (same model only), reused without any request
-    let out: {p_worst: number, score: number, text: string}[] = batch.map(() => ({p_worst: 0, score: 2, text: ''}));
-    let miss_idx: int[] = batch.map((_, i) => i);
+    let out: {p_worst: number, score: number, text: string}[] = items.map(() => ({p_worst: 0, score: 2, text: ''}));
+    let miss_idx: int[] = items.map((_, i) => i);
     if(use_verdicts && cid) {
         let store = await load_verdict_store();
         miss_idx = [];
-        batch.forEach((c, i) => {
-            let v = store[verdict_key(cid, window_lo, c.obj.content)];
+        items.forEach((it, i) => {
+            let v = store[verdict_key(cid, it.w_lo_s, it.cand.obj.content)];
             if(v && v.m === AI_MODEL)
-                out[i] = {p_worst: v.p, score: v.s, text: c.obj.content};
+                out[i] = {p_worst: v.p, score: v.s, text: it.cand.obj.content};
             else
                 miss_idx.push(i);
         });
@@ -216,9 +243,9 @@ async function score_batch(video_key: string, window_lo: int, window_hi: int, se
         }
     }
 
-    const sub = miss_idx.map(i => batch[i]);
+    const sub = miss_idx.map(i => items[i]);
     const sub_cands = miss_idx.map(i => cands[i]);
-    const body = build_request(video_key, window_lo, window_hi, segidx, sub_pad_s, sub_cands);
+    const body = build_request(video_key, pack_lo, pack_hi, segidx, sub_pad_s, sub_cands);
 
     let answers: any = null;
     let last_retry_after = 0;
@@ -247,12 +274,12 @@ async function score_batch(video_key: string, window_lo: int, window_hi: int, se
     let store: {[k: string]: any} | null = null;
     if(use_verdicts && cid)
         store = await load_verdict_store();
-    sub.forEach((c, j) => {
+    sub.forEach((it, j) => {
         const p_worst = answers['worst_' + j] ? answers['worst_' + j].noul : 0;
         const score = answers['qual_' + j] ? answers['qual_' + j].score : 2;
-        out[miss_idx[j]] = {p_worst, score, text: c.obj.content};
+        out[miss_idx[j]] = {p_worst, score, text: it.cand.obj.content};
         if(store !== null) {
-            store[verdict_key(cid, window_lo, c.obj.content)] = {
+            store[verdict_key(cid, it.w_lo_s, it.cand.obj.content)] = {
                 p: p_worst, s: score, m: AI_MODEL, t: Date.now(), b: get_bvid_from_url(),
             };
             schedule_verdict_flush();
@@ -737,7 +764,6 @@ export async function ai_filter_chunk(
         return ret;
     }
 
-    const win_ms = Math.max(1, config.AI_WINDOW_SECONDS || 5) * 1000;
     const max_cand = Math.max(5, config.AI_MAX_CANDIDATES || 50);
     const del_thr = typeof config.AI_DELETE_THRESHOLD === 'number' ? config.AI_DELETE_THRESHOLD : 0.6;
     const ratio = typeof config.AI_RATIO === 'number' ? config.AI_RATIO : 0;
@@ -774,10 +800,10 @@ export async function ai_filter_chunk(
     if(cid && bvid)
         await ensure_subtitle('cid_' + cid, bvid, cid, Math.min(2500, Math.max(0, deadline - Date.now())));
 
-    // bucket merged clusters into time windows
+    // bucket merged clusters into semantic windows
     const windows = new Map<int, Candidate[]>();
     chunk.objs.forEach((obj, idx) => {
-        const w = Math.floor(obj.time_ms / win_ms);
+        const w = Math.floor(obj.time_ms / SEMANTIC_WINDOW_MS);
         const peers = (obj as any).pakku && (obj as any).pakku.peers as {time_ms: int}[] | undefined;
         const count = Math.max(1, peers ? peers.length : 1);
         let span_ms = 0;
@@ -803,95 +829,136 @@ export async function ai_filter_chunk(
     let windows_done = 0;
     let long_skipped_count = 0;
     gate_reset_for_video(cid || parseInt(hash_str(video_key), 36) || 0);
-    gate_arm(pause_gate, win_ms / 1000);
+    gate_arm(pause_gate, SEMANTIC_WINDOW_S);
 
-    const tasks: Promise<void>[] = [];
-    for(const [w, cands_all] of [...windows.entries()].sort((a, b) => a[0] - b[0])) { // chronological: near-playhead windows score first
+    // judged windows (>=3 candidates after the length limit), chronological
+    const judged: JudgedWindow[] = [];
+    for(const [w, cands_all] of [...windows.entries()].sort((a, b) => a[0] - b[0])) {
         // length limit: over-long danmaku skip judgement and pass through
         const cands = cands_all.filter(c => c.obj.content.length <= max_text_len);
         long_skipped_count += cands_all.length - cands.length;
 
-        gate_register(w, win_ms / 1000, cands.length);
+        gate_register(w, SEMANTIC_WINDOW_S, cands.length);
         if(cands.length < 3)
             continue; // tiny window: not worth a request, keep everything
         ret.ai_windows++;
 
-        const w_lo = Math.floor(w * win_ms / 1000);
-        const w_hi = Math.floor((w + 1) * win_ms / 1000);
-
-        // score in batches of max_cand, prioritising high merged count (spam signature)
-        const sorted = [...cands].sort((a, b) => b.count - a.count);
-        const batches: Candidate[][] = [];
-        for(let i = 0; i < sorted.length; i += max_cand)
-            batches.push(sorted.slice(i, i + max_cand));
-
-        const score_window = async () => {
-            const survivors: {c: Candidate, score: number}[] = [];
-            const log_cands: any[] = [];
-            const t_win = Date.now();
-            let win_err: string | null = null;
-
-            for(const batch of batches) {
-                let scores: {p_worst: number, score: number, text: string}[];
-                try {
-                    // priority: score the window closest to the playhead first,
-                    // so the video head becomes watchable earliest if the gate
-                    // ever gives up or is disabled
-                    await global_sem.acquire(() => Math.abs(w_lo - gate_current_playhead_s()));
-                    try {
-                        scores = await with_timeout(
-                            score_batch(video_key, w_lo, w_hi, segidx, sub_pad_s, batch, cid, config.AI_VERDICT_CACHE === true),
-                            60000,
-                            batch.map(c => ({p_worst: 0, score: 2, text: c.obj.content})), // fail-open
-                        );
-                    } finally {
-                        global_sem.release();
-                    }
-                } catch(e: any) {
-                    console.warn('pakku ai_filter: window batch failed (fail-open)', e);
-                    win_err = e && e.message || String(e);
-                    scores = batch.map(c => ({p_worst: 0, score: 2, text: c.obj.content}));
-                }
-                batch.forEach((c, i) => {
-                    const s = scores[i];
-                    if(s && s.p_worst >= del_thr) {
-                        deleted.add(c.idx);
-                        ret.ai_deleted += c.count;
-                        ai_report_deleted(c.count);
-                        log_cands.push({t: c.obj.content, n: c.count, p: s.p_worst, s: s.score, k: 0});
-                    } else {
-                        survivors.push({c, score: s ? s.score : 2});
-                        log_cands.push({t: c.obj.content, n: c.count, p: s ? s.p_worst : 0, s: s ? s.score : 2, k: 1});
-                    }
-                });
-            }
-            // ratio layer: among survivors, drop the worst floor(n*ratio)
-            if(ratio > 0 && survivors.length >= 5) {
-                const drop_n = Math.floor(survivors.length * ratio);
-                if(drop_n > 0) {
-                    survivors.sort((a, b) => a.score - b.score);
-                    for(let i = 0; i < drop_n; i++) {
-                        ratio_deleted.add(survivors[i].c.idx);
-                        ret.ai_deleted_ratio += survivors[i].c.count;
-                        ai_report_deleted(survivors[i].c.count);
-                        let lc = log_cands.find(x => x.t === survivors[i].c.obj.content && x.k === 1);
-                        if(lc)
-                            lc.k = 2;
-                    }
-                }
-            }
-            windows_done++;
-            gate_window_done(w, win_ms / 1000);
-            ai_log_append({
-                type: 'window', ts: Date.now(), segidx, window: w_lo + '~' + w_hi,
-                cands: log_cands.length, del_spam: log_cands.filter(x => x.k === 0).length,
-                del_ratio: log_cands.filter(x => x.k === 2).length,
-                api_ms: Date.now() - t_win, error: win_err,
-                detail: log_cands.slice(0, 80),
-            });
-        };
-        tasks.push(score_window());
+        // high merged count first: the spam signature leads each request
+        judged.push({
+            w,
+            lo_s: Math.floor(w * SEMANTIC_WINDOW_S),
+            hi_s: Math.floor((w + 1) * SEMANTIC_WINDOW_S),
+            cands: [...cands].sort((a, b) => b.count - a.count),
+        });
     }
+
+    // pack adjacent judged windows into shared requests, bounded by candidate
+    // count (<= max_cand) and time span (<= PACK_SPAN_S); ratio ranking, the
+    // tiny-window exemption and the verdict cache keep using the semantic
+    // window, not the pack
+    const packs: RequestPack[] = [];
+    let cur_pack: RequestPack | null = null;
+    for(const win of judged) {
+        let rest = win.cands;
+        while(rest.length) {
+            if(!cur_pack || cur_pack.count >= max_cand || win.hi_s - cur_pack.lo_s > PACK_SPAN_S) {
+                cur_pack = {lo_s: win.lo_s, hi_s: win.hi_s, count: 0, entries: []};
+                packs.push(cur_pack);
+            }
+            const take = Math.min(rest.length, max_cand - cur_pack.count);
+            cur_pack.entries.push({win, part: rest.slice(0, take)});
+            cur_pack.count += take;
+            cur_pack.hi_s = win.hi_s;
+            rest = rest.slice(take);
+        }
+    }
+
+    // per-window completion bookkeeping: a window (and its gate slot and ratio
+    // layer) settles only after every pack containing it has returned
+    const win_state = new Map<int, {win: JudgedWindow, survivors: {c: Candidate, score: number}[], log_cands: any[], pending: int, err: string | null, t0: int}>();
+    for(const win of judged)
+        win_state.set(win.w, {win, survivors: [], log_cands: [], pending: 0, err: null, t0: 0});
+    for(const p of packs)
+        for(const e of p.entries)
+            win_state.get(e.win.w)!.pending++;
+
+    const finish_window = (w: int) => {
+        const st = win_state.get(w)!;
+        // ratio layer: among survivors, drop the worst floor(n*ratio)
+        if(ratio > 0 && st.survivors.length >= 5) {
+            const drop_n = Math.floor(st.survivors.length * ratio);
+            if(drop_n > 0) {
+                st.survivors.sort((a, b) => a.score - b.score);
+                for(let i = 0; i < drop_n; i++) {
+                    ratio_deleted.add(st.survivors[i].c.idx);
+                    ret.ai_deleted_ratio += st.survivors[i].c.count;
+                    ai_report_deleted(st.survivors[i].c.count);
+                    let lc = st.log_cands.find(x => x.t === st.survivors[i].c.obj.content && x.k === 1);
+                    if(lc)
+                        lc.k = 2;
+                }
+            }
+        }
+        windows_done++;
+        gate_window_done(w, SEMANTIC_WINDOW_S);
+        ai_log_append({
+            type: 'window', ts: Date.now(), segidx, window: st.win.lo_s + '~' + st.win.hi_s,
+            cands: st.log_cands.length, del_spam: st.log_cands.filter(x => x.k === 0).length,
+            del_ratio: st.log_cands.filter(x => x.k === 2).length,
+            api_ms: Date.now() - st.t0, error: st.err,
+            detail: st.log_cands.slice(0, 80),
+        });
+    };
+
+    const tasks = packs.map((p) => (async () => {
+        const items = p.entries.flatMap(e => e.part.map(cand => ({cand, w_lo_s: e.win.lo_s})));
+        for(const e of p.entries) {
+            const st = win_state.get(e.win.w)!;
+            if(!st.t0)
+                st.t0 = Date.now();
+        }
+        let scores: {p_worst: number, score: number, text: string}[];
+        try {
+            // priority: score the pack closest to the playhead first, so the
+            // video head becomes watchable earliest if the gate ever gives up
+            // or is disabled
+            await global_sem.acquire(() => Math.abs(p.lo_s - gate_current_playhead_s()));
+            try {
+                scores = await with_timeout(
+                    score_pack(video_key, p.lo_s, p.hi_s, segidx, sub_pad_s, items, cid, config.AI_VERDICT_CACHE === true),
+                    60000,
+                    items.map(it => ({p_worst: 0, score: 2, text: it.cand.obj.content})), // fail-open
+                );
+            } finally {
+                global_sem.release();
+            }
+        } catch(e: any) {
+            console.warn('pakku ai_filter: pack failed (fail-open)', e);
+            const msg = e && e.message || String(e);
+            for(const e2 of p.entries)
+                win_state.get(e2.win.w)!.err = msg;
+            scores = items.map(it => ({p_worst: 0, score: 2, text: it.cand.obj.content}));
+        }
+        let i = 0;
+        for(const e of p.entries) {
+            const st = win_state.get(e.win.w)!;
+            for(const c of e.part) {
+                const s = scores[i++];
+                if(s && s.p_worst >= del_thr) {
+                    deleted.add(c.idx);
+                    ret.ai_deleted += c.count;
+                    ai_report_deleted(c.count);
+                    st.log_cands.push({t: c.obj.content, n: c.count, p: s.p_worst, s: s.score, k: 0});
+                } else {
+                    st.survivors.push({c, score: s ? s.score : 2});
+                    st.log_cands.push({t: c.obj.content, n: c.count, p: s ? s.p_worst : 0, s: s ? s.score : 2, k: 1});
+                }
+            }
+            st.pending--;
+            if(st.pending === 0)
+                finish_window(e.win.w);
+        }
+    })());
 
     // full judgment: wait for EVERY window of this segment before returning the
     // chunk (fail-open on the budget only, against pathological hangs — the
@@ -911,11 +978,11 @@ export async function ai_filter_chunk(
     // still finishing in the background) has settled
     void Promise.all(tasks).then(() => flush_verdict_store());
     if(ret.ai_windows) {
-        const budget_hit = windows_done < tasks.length;
-        console.info(`pakku ai_filter: seg ${segidx} windows=${ret.ai_windows} done=${windows_done}/${tasks.length} budget_hit=${budget_hit} deleted(spam)=${ret.ai_deleted} deleted(ratio)=${ret.ai_deleted_ratio} kept=${ret.chunk.objs.length}/${chunk.objs.length} ship_ms=${Date.now() - t_start}`);
+        const budget_hit = windows_done < ret.ai_windows;
+        console.info(`pakku ai_filter: seg ${segidx} windows=${ret.ai_windows} packs=${packs.length} done=${windows_done}/${ret.ai_windows} budget_hit=${budget_hit} deleted(spam)=${ret.ai_deleted} deleted(ratio)=${ret.ai_deleted_ratio} kept=${ret.chunk.objs.length}/${chunk.objs.length} ship_ms=${Date.now() - t_start}`);
         ai_log_append({
             type: 'seg', ts: Date.now(), segidx, title: video_ctx.title || '', bvid,
-            windows: ret.ai_windows, done: windows_done, budget_hit,
+            windows: ret.ai_windows, packs: packs.length, done: windows_done, budget_hit,
             del_spam: ret.ai_deleted, del_ratio: ret.ai_deleted_ratio,
             kept: ret.chunk.objs.length, total: chunk.objs.length, ship_ms: Date.now() - t_start,
             long_skipped: long_skipped_count,
