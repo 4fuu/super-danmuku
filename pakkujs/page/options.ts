@@ -297,6 +297,31 @@ id('ai-clear-cache').addEventListener('click', ()=>{
     });
 });
 
+id('ai-ad-skip-clear-cache').addEventListener('click', ()=>{
+    if(!confirm('清除本地缓存的全部口播广告区间？\n清除后已打开的视频页面将重新扫描。'))
+        return;
+    void chrome.storage.local.get('ai_ad_intervals', (st: any) => {
+        const store = st && st.ai_ad_intervals;
+        const n = store ? Object.keys(store).length : 0;
+        chrome.storage.local.remove('ai_ad_intervals', () => {
+            // also drop the in-memory intervals held by open tabs; the content
+            // script (ad_skip.ts) listens for pakku_ad_clear_cache
+            try {
+                chrome.tabs.query({}, (tabs: chrome.tabs.Tab[]) => {
+                    for(const t of tabs || []) {
+                        if(t.id === undefined)
+                            continue;
+                        try {
+                            chrome.tabs.sendMessage(t.id, {type: 'pakku_ad_clear_cache'}, () => void chrome.runtime.lastError);
+                        } catch(e) {}
+                    }
+                });
+            } catch(e) {}
+            id('ai-ad-skip-clear-cache-status').textContent = n > 0 ? `（已清除 ${n} 个视频）` : '（缓存为空）';
+        });
+    });
+});
+
 function apply_pakku_native_toggle() {
     if(id('show-pakku-native').checked)
         document.body.classList.add('show-pakku-native');
@@ -416,6 +441,7 @@ function loadconfig() {
     id('ai-ad-skip-auto-threshold').value = config.AI_AD_SKIP_AUTO_THRESHOLD;
     id('ai-ad-skip-min-s').value = config.AI_AD_SKIP_MIN_S;
     id('ai-ad-skip-max-cover').value = config.AI_AD_SKIP_MAX_COVER;
+    id('ai-ad-skip-cache').checked = config.AI_AD_SKIP_CACHE;
     void chrome.storage.local.get('AI_API_KEY', (st: any) => {
         let k: string = st.AI_API_KEY || '';
         id('ai-api-key').value = k;
@@ -668,6 +694,7 @@ function update(this: HTMLInputElement) {
     config.AI_AD_SKIP_AUTO_THRESHOLD = safe_float(id('ai-ad-skip-auto-threshold').value, 0.5, 1, DEFAULT_CONFIG.AI_AD_SKIP_AUTO_THRESHOLD);
     config.AI_AD_SKIP_MIN_S = safe_int(id('ai-ad-skip-min-s').value, 5, 60, DEFAULT_CONFIG.AI_AD_SKIP_MIN_S);
     config.AI_AD_SKIP_MAX_COVER = safe_float(id('ai-ad-skip-max-cover').value, 0.3, 0.95, DEFAULT_CONFIG.AI_AD_SKIP_MAX_COVER);
+    config.AI_AD_SKIP_CACHE = id('ai-ad-skip-cache').checked;
     void chrome.storage.local.set({AI_API_KEY: id('ai-api-key').value.trim()});
     // 其他
     config.POPUP_BADGE = id('popup-badge').value;
@@ -687,6 +714,17 @@ function update(this: HTMLInputElement) {
 
 loadconfig();
 
+// NOTE (the ad-skip section shipped broken the first time because of this):
+// adding an options input requires FOUR wiring points, and missing any one of
+// them fails silently —
+//   1. the markup in options.html
+//   2. loadconfig(): form field <- config value
+//   3. update(): config value <- form field (update() is the ONLY save path;
+//      there is no generic form serializer)
+//   4. this change-listener list — without a listener here, update() never
+//      runs, so the setting renders fine but never persists
+// A new config key also needs a DEFAULT_CONFIG entry in background/config.ts,
+// otherwise migrate_config() drops it on load.
 for(let elem of [
     'show-advanced',
     // 弹幕合并
@@ -703,6 +741,9 @@ for(let elem of [
     'ai-filter', 'ai-api-key', 'ai-delete-threshold', 'ai-ratio',
     'ai-subtitle-padding', 'ai-concurrency', 'ai-budget', 'ai-pause-gate',
     'ai-max-text-len', 'ai-verdict-cache',
+    // AI 口播广告跳过
+    'ai-ad-skip', 'ai-ad-skip-auto', 'ai-ad-skip-auto-threshold',
+    'ai-ad-skip-min-s', 'ai-ad-skip-max-cover', 'ai-ad-skip-cache',
     // 其他
     'popup-badge', 'combine-threads', 'read-player-blacklist',
 ]) {

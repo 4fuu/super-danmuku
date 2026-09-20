@@ -285,6 +285,21 @@ async function run_scan(cid, cfg, entries) {
         && short_rec.suppressed !== 'coverage',
         'short read was judged and dropped by the duration filter, not the coverage guard');
 
+    // ===== scenario 9: AI_AD_SKIP_CACHE off — stored entry ignored, nothing persisted =====
+    mod.ad_skip_on_ingress({type: 'proto_seg', cid: '999'}, CFG); // leaving the video resets state
+    const CFG_NOCACHE = {...CFG, AI_AD_SKIP_CACHE: false};
+    const calls_before_9 = jev_calls.length;
+    ivs = await run_scan(42027846013, CFG_NOCACHE, FIXTURE_DANMAKU); // cid cached back in scenario 1
+    console.log('scenario9: cache off over a cached cid, new jev_calls=' + (jev_calls.length - calls_before_9));
+    assert(jev_calls.length - calls_before_9 === 5, 'a stored entry is ignored, the full scan re-runs');
+    assert(ivs.length === 1 && in_range(ivs[0].start_s, 248, 257), 'the rescan still finds the ad');
+    // a fresh cid scanned with the cache off must not land in storage
+    ivs = await run_scan(1212, CFG_NOCACHE, FIXTURE_DANMAKU);
+    assert(ivs.length === 1, 'fresh cid scanned');
+    assert(!storage_data['ai_ad_intervals'] || !storage_data['ai_ad_intervals']['1212'],
+        'nothing persisted for a cid scanned with the cache off');
+    console.log('scenario9b: fresh cid, cache off, no storage entry');
+
     console.log('ALL PASS');
     process.exit(0); // the ui watcher interval would keep the process alive
 })().catch(e => { console.error('FAIL: unhandled', e); process.exit(1); });

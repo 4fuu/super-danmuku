@@ -14,7 +14,13 @@ function ai_log_get(): Promise<any[]> {
     });
 }
 
-function render(lines: any[]) {
+function render(all_lines: any[]) {
+    // type filter: ad_scan records belong to the ad-skip pipeline, everything
+    // else (seg/window) to the danmaku quality filter — this is the "independent
+    // log" view for each pipeline without duplicating storage or transport
+    const type_filter = (id('type-filter') as HTMLSelectElement).value;
+    let lines = type_filter === 'all' ? all_lines :
+        all_lines.filter(r => type_filter === 'ad' ? r.type === 'ad_scan' : r.type !== 'ad_scan');
     let view = id('log-view') as HTMLDivElement;
     let summary = id('summary');
     let empty = id('empty');
@@ -50,6 +56,7 @@ function refresh() {
 }
 
 id('refresh').addEventListener('click', refresh);
+id('type-filter').addEventListener('change', refresh);
 id('clear').addEventListener('click', () => {
     chrome.runtime.sendMessage({type: 'ai_log_clear'}, () => void chrome.runtime.lastError);
     render([]);

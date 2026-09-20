@@ -102,6 +102,7 @@ async function getChatResponse({ apiKey, baseUrl, model, messages }) {
     AI_AD_SKIP_AUTO_THRESHOLD: 0.9, // auto-skip when interval confidence >= this (0.5~1)
     AI_AD_SKIP_MIN_S: 10, // reads shorter than this are not worth a jarring cut (one-line sponsor mentions)
     AI_AD_SKIP_MAX_COVER: 0.6, // ads covering >= this fraction of the video mean the promotion IS the content (dedicated / soft ad): no prompts
+    AI_AD_SKIP_CACHE: true, // reuse the per-cid interval cache (30d, zero requests on revisit); off = rescan every visit
 
     // 其他
     POPUP_BADGE: 'percent' as ('percent' | 'count' | 'dispval' | 'off'),

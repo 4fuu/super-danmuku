@@ -361,6 +361,18 @@
                         <input id="ai-ad-skip-max-cover" type="number" min="0.3" max="0.95" step="0.05" style="width: 70px">
                         时，视为「广告即内容」（全片定制、软广），不再提示（默认 0.6）
                     </p>
+                    <p>
+                        <input id="ai-ad-skip-cache" type="checkbox">
+                        <label for="ai-ad-skip-cache">缓存检测结果：</label>
+                        <span>按视频缓存广告区间，30 天内重看零请求；关闭则每次访问重新扫描</span>
+                        <button type="button" id="ai-ad-skip-clear-cache">清除口播广告缓存</button>
+                        <span id="ai-ad-skip-clear-cache-status"></span>
+                    </p>
+                    <p>
+                        <strong>扫描诊断：</strong>
+                        <a href="ai_log.html">查看 / 导出 AI 日志</a>
+                        <span>（页面顶部可按「口播广告」类型筛选，独立查看本管线的记录）</span>
+                    </p>
                     <p class="warning">
                         * 使用与 AI 弹幕过滤相同的 API key 与请求配额；无字幕时降级为仅弹幕判定（精度略降）。检测失败时静默跳过，不影响播放
                     </p>

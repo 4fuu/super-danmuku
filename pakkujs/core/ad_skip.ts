@@ -377,7 +377,9 @@ async function perform_scan(cid: int, config: LocalizedConfig) {
     refresh_video_ctx_from_dom();
 
     // cached result from an earlier visit: reuse, zero requests
-    const cache = await load_cache();
+    // (AI_AD_SKIP_CACHE off = rescan on every visit, keep nothing on disk)
+    const use_cache = config.AI_AD_SKIP_CACHE !== false;
+    const cache = use_cache ? await load_cache() : {};
     const hit = cache['' + cid];
     if(hit && hit.model === AD_MODEL && Date.now() - (hit.ts || 0) < AD_CACHE_TTL_MS) {
         intervals = (hit.intervals || []).map((iv: any) => ({...iv, skipped: false}));
@@ -500,10 +502,12 @@ async function perform_scan(cid: int, config: LocalizedConfig) {
     }
 
     intervals = out;
-    cache['' + cid] = {bvid, model: AD_MODEL, ts: Date.now(), intervals: out.map(iv => ({
-        start_s: iv.start_s, end_s: iv.end_s, conf: iv.conf,
-    }))};
-    await save_cache(cache);
+    if(use_cache) {
+        cache['' + cid] = {bvid, model: AD_MODEL, ts: Date.now(), intervals: out.map(iv => ({
+            start_s: iv.start_s, end_s: iv.end_s, conf: iv.conf,
+        }))};
+        await save_cache(cache);
+    }
     if(intervals.length)
         start_ui_watcher();
 
@@ -675,3 +679,23 @@ function start_ui_watcher() {
         return;
     ui_timer = setInterval(ui_tick, 500);
 }
+
+// ---- cache clearing: the options page broadcasts pakku_ad_clear_cache ----
+// (distinct from ai_filter's ai_clear_cache so the two buttons stay independent)
+function ad_clear_caches() {
+    intervals = [];
+    remove_pill();
+    try {
+        chrome.storage.local.remove(AD_CACHE_KEY);
+    } catch(e) {}
+}
+
+try {
+    if(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage)
+        chrome.runtime.onMessage.addListener((msg: any, _sender: any, sendResponse: (r: any) => void) => {
+            if(msg && msg.type === 'pakku_ad_clear_cache') {
+                ad_clear_caches();
+                try { sendResponse({ok: true}); } catch(e) {}
+            }
+        });
+} catch(e) {}
