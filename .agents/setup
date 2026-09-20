@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Orb setup for super-danmuku.
+# Installs the toolchain dependencies a fresh orb needs for the AGENTS.md
+# verification steps (npm install / tsc --noEmit / grunt build / smoke test).
+# Stale snapshots rerun this script, so it must be idempotent and fast when warm.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+run() {
+    local label="$1"; shift
+    local start=$SECONDS
+    echo "[setup] $label"
+    "$@"
+    echo "[setup] done: $label ($((SECONDS - start))s)"
+}
+
+# Node dependencies. No lockfile is committed (package-lock.json is gitignored),
+# so use `npm install`, never `npm ci`. grunt/tsc resolve from node_modules/.bin
+# via npm scripts; no global grunt-cli is needed.
+run 'npm install' npm install --no-audit --no-fund
+
+# Python deps for tools/bili_login.py and tools/fetch_subtitle.py (Bilibili dev
+# utilities; optional for the build, guarded so warm runs skip it).
+if ! python3 -c 'import requests, qrcode' >/dev/null 2>&1; then
+    run 'python deps (requests, qrcode)' uv pip install --system requests qrcode
+else
+    echo '[setup] python deps already present, skipping'
+fi
+
+# Orbs start with a shallow clone, but AGENTS.md and release notes rely on full
+# git history (git log --reverse, tag ranges). Best-effort: history is a
+# convenience, not a build requirement.
+if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+    echo '[setup] git fetch --unshallow (best-effort)'
+    git fetch --quiet --unshallow origin \
+        || echo '[setup] warning: unshallow failed, continuing without full history'
+fi
+
+echo '[setup] complete'

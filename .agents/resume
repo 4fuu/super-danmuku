@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Orb resume hook for super-danmuku.
+# Nothing to reconnect or re-authenticate: this repo has no databases or
+# long-lived services, and the Jev API key lives in chrome.storage.local at
+# extension runtime, not in the dev environment. Fast sanity check only.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+if [ ! -x node_modules/.bin/tsc ]; then
+    echo '[resume] warning: node_modules is missing; run .agents/setup to restore dependencies' >&2
+fi
