@@ -1,7 +1,7 @@
 {
     "name": "super-danmuku：哔哩哔哩弹幕AI过滤器",
     "short_name": "super-danmuku",
-    "version": "2026.919.5",
+    "version": "2026.920.1",
     "description": "合并B站(bilibili.com)刷屏弹幕，并用 AI 实时过滤低质量、与视频无关的弹幕，还你清爽的弹幕视频体验。",
     "homepage_url": "https://github.com/4fuu/super-danmuku",
     "icons": {
