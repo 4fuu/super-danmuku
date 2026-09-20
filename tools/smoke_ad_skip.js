@@ -300,6 +300,106 @@ async function run_scan(cid, cfg, entries) {
         'nothing persisted for a cid scanned with the cache off');
     console.log('scenario9b: fresh cid, cache off, no storage entry');
 
+    // ===== scenario 10: prompt lead window / ✕ dismiss / hang TTL / notice duration =====
+    // minimal DOM mock: real elements are not needed, only the shapes ui_tick
+    // touches (pill/notice creation, host appendChild, click listeners)
+    function make_dom_mock() {
+        const host = {style: {}, children: [], appendChild(c) { this.children.push(c); }};
+        const video = {currentTime: 0, parentElement: host, closest: () => null};
+        global.document = {
+            title: global.document.title,
+            querySelector: sel => sel === 'video' ? video : null,
+            createElement: () => {
+                const el = {
+                    id: '', style: {}, _html: '', _subs: {},
+                    set innerHTML(h) { this._html = h; },
+                    get innerHTML() { return this._html; },
+                    querySelector(sel) {
+                        if(!this._subs[sel]) {
+                            const sub = {listeners: {}, addEventListener(ev, fn) { this.listeners[ev] = fn; }};
+                            this._subs[sel] = sub;
+                        }
+                        return this._subs[sel];
+                    },
+                    addEventListener(ev, fn) { this.listeners = this.listeners || {}; this.listeners[ev] = fn; },
+                    appendChild(c) { this.children = this.children || []; this.children.push(c); },
+                    remove() {
+                        this._removed = true;
+                        const i = host.children.indexOf(this);
+                        if(i >= 0) host.children.splice(i, 1);
+                    },
+                };
+                return el;
+            },
+        };
+        global.getComputedStyle = () => ({position: 'static'});
+        const by_id = want => host.children.find(e => e.id === want);
+        return {host, video, pill: () => by_id('pakku-ad-skip'), notice: () => by_id('pakku-ad-skip-notice')};
+    }
+
+    // (a-c) lead window + ✕ dismiss (long TTL so only the ✕ path can hide it)
+    const dom = make_dom_mock();
+    const CFG_UI = {AI_AD_SKIP: true, AI_AD_SKIP_AUTO: false, AI_AD_SKIP_PROMPT_LEAD_S: 5,
+        AI_AD_SKIP_PROMPT_TTL_S: 60, AI_AD_SKIP_NOTE_S: 2};
+    dom.video.currentTime = 252.35 - 6; // before the lead window opens
+    await run_scan(10101, CFG_UI, FIXTURE_DANMAKU);
+    await sleep(1300);
+    assert(!dom.pill(), 'no prompt before the lead window opens');
+    dom.video.currentTime = 252.35 - 4; // inside the lead window
+    await sleep(1300);
+    assert(dom.pill(), 'prompt appears inside the lead window');
+    assert(dom.pill()._html.includes('pakku-ad-close'), 'prompt carries the ✕ close button');
+    dom.pill()._subs['button.pakku-ad-close'].listeners.click();
+    await sleep(600);
+    assert(!dom.pill(), '✕ removes the prompt');
+    dom.video.currentTime = 300; // inside the ad itself
+    await sleep(1300);
+    assert(!dom.pill(), 'a dismissed interval never prompts again this visit');
+    console.log('scenario10a-c: lead window opens at start-5, ✕ dismisses for the visit');
+
+    // (d) hang TTL auto-dismisses (short TTL, nobody clicks anything)
+    const dom2 = make_dom_mock();
+    dom2.video.currentTime = 252.35 - 4;
+    await run_scan(20202, {...CFG_UI, AI_AD_SKIP_PROMPT_TTL_S: 2}, FIXTURE_DANMAKU);
+    await sleep(1000);
+    assert(dom2.pill(), 'prompt appears with the short TTL');
+    await sleep(3000); // ttl 2s + tick margin
+    assert(!dom2.pill(), 'prompt auto-dismisses after hanging for the TTL');
+    dom2.video.currentTime = 300;
+    await sleep(1300);
+    assert(!dom2.pill(), 'timed-out interval does not prompt again');
+    console.log('scenario10d: TTL auto-dismiss');
+
+    // (e) manual skip: notice shows for AI_AD_SKIP_NOTE_S, then disappears
+    const dom3 = make_dom_mock();
+    dom3.video.currentTime = 300;
+    await run_scan(30303, CFG_UI, FIXTURE_DANMAKU);
+    await sleep(1300);
+    assert(dom3.pill(), 'prompt appears inside the ad');
+    dom3.pill()._subs['button'].listeners.click(); // 跳过广告
+    await sleep(300);
+    assert(!dom3.pill(), 'skip removes the prompt');
+    assert(dom3.notice(), 'post-skip notice appears');
+    assert(Math.abs(dom3.video.currentTime - 398.16) < 0.05, 'skip seeked to the ad end');
+    await sleep(1000);
+    assert(dom3.notice(), 'notice still up before the note duration elapses');
+    await sleep(2500); // note_s 2s + margin
+    assert(!dom3.notice(), 'notice hides after AI_AD_SKIP_NOTE_S seconds');
+    console.log('scenario10e: skip notice duration');
+
+    // (f) the 回到 undo link seeks back to the ad start
+    const dom4 = make_dom_mock();
+    dom4.video.currentTime = 300;
+    await run_scan(40404, CFG_UI, FIXTURE_DANMAKU);
+    await sleep(1300);
+    dom4.pill()._subs['button'].listeners.click();
+    await sleep(300);
+    assert(dom4.notice(), 'notice appears for the undo test');
+    dom4.notice()._subs['a'].listeners.click();
+    assert(Math.abs(dom4.video.currentTime - 252.35) < 0.05, '回到 seeks back to the ad start');
+    assert(!dom4.notice(), 'undo hides the notice');
+    console.log('scenario10f: undo link');
+
     console.log('ALL PASS');
     process.exit(0); // the ui watcher interval would keep the process alive
 })().catch(e => { console.error('FAIL: unhandled', e); process.exit(1); });

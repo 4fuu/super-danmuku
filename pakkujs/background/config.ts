@@ -100,6 +100,9 @@ async function getChatResponse({ apiKey, baseUrl, model, messages }) {
     AI_AD_SKIP: false, // detect spoken ad reads and show a skip prompt on the player
     AI_AD_SKIP_AUTO: false, // additionally auto-skip when confidence is high enough
     AI_AD_SKIP_AUTO_THRESHOLD: 0.9, // auto-skip when interval confidence >= this (0.5~1)
+    AI_AD_SKIP_PROMPT_LEAD_S: 5, // show the prompt this many seconds before the ad starts
+    AI_AD_SKIP_PROMPT_TTL_S: 30, // prompt auto-dismisses after hanging this long (0 = keep until the ad ends)
+    AI_AD_SKIP_NOTE_S: 10, // the "skipped" notice (with the undo link) shows this many seconds
     AI_AD_SKIP_MIN_S: 10, // reads shorter than this are not worth a jarring cut (one-line sponsor mentions)
     AI_AD_SKIP_MAX_COVER: 0.6, // ads covering >= this fraction of the video mean the promotion IS the content (dedicated / soft ad): no prompts
     AI_AD_SKIP_CACHE: true, // reuse the per-cid interval cache (30d, zero requests on revisit); off = rescan every visit

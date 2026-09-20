@@ -351,6 +351,24 @@
                         时自动跳过（默认 0.9；手动点击跳过按钮不受此阈值影响）
                     </p>
                     <p>
+                        <label for="ai-ad-skip-prompt-lead">提前提醒：</label>
+                        进入广告片段前
+                        <input id="ai-ad-skip-prompt-lead" type="number" min="0" max="60" step="1" style="width: 70px">
+                        秒开始显示提示（默认 5）
+                    </p>
+                    <p>
+                        <label for="ai-ad-skip-prompt-ttl">提示悬挂时长：</label>
+                        提示条悬挂
+                        <input id="ai-ad-skip-prompt-ttl" type="number" min="0" max="600" step="5" style="width: 70px">
+                        秒后自动收起（默认 30；0 为一直显示到广告结束；期间可随时点提示条上的 ✕ 关闭）
+                    </p>
+                    <p>
+                        <label for="ai-ad-skip-note">跳转后提示：</label>
+                        跳过后的「已跳过」通知（含「回到」撤回按钮）显示
+                        <input id="ai-ad-skip-note" type="number" min="2" max="60" step="1" style="width: 70px">
+                        秒（默认 10）
+                    </p>
+                    <p>
                         <label for="ai-ad-skip-min-s">最短提示时长：</label>
                         <input id="ai-ad-skip-min-s" type="number" min="5" max="60" step="1" style="width: 70px">
                         秒（短于此时长的口播不提示跳过——比如一句带过的赞助商，跳了反而割裂；默认 10）

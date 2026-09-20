@@ -439,6 +439,9 @@ function loadconfig() {
     id('ai-ad-skip').checked = config.AI_AD_SKIP;
     id('ai-ad-skip-auto').checked = config.AI_AD_SKIP_AUTO;
     id('ai-ad-skip-auto-threshold').value = config.AI_AD_SKIP_AUTO_THRESHOLD;
+    id('ai-ad-skip-prompt-lead').value = config.AI_AD_SKIP_PROMPT_LEAD_S;
+    id('ai-ad-skip-prompt-ttl').value = config.AI_AD_SKIP_PROMPT_TTL_S;
+    id('ai-ad-skip-note').value = config.AI_AD_SKIP_NOTE_S;
     id('ai-ad-skip-min-s').value = config.AI_AD_SKIP_MIN_S;
     id('ai-ad-skip-max-cover').value = config.AI_AD_SKIP_MAX_COVER;
     id('ai-ad-skip-cache').checked = config.AI_AD_SKIP_CACHE;
@@ -692,6 +695,9 @@ function update(this: HTMLInputElement) {
     config.AI_AD_SKIP = id('ai-ad-skip').checked;
     config.AI_AD_SKIP_AUTO = id('ai-ad-skip-auto').checked;
     config.AI_AD_SKIP_AUTO_THRESHOLD = safe_float(id('ai-ad-skip-auto-threshold').value, 0.5, 1, DEFAULT_CONFIG.AI_AD_SKIP_AUTO_THRESHOLD);
+    config.AI_AD_SKIP_PROMPT_LEAD_S = safe_int(id('ai-ad-skip-prompt-lead').value, 0, 60, DEFAULT_CONFIG.AI_AD_SKIP_PROMPT_LEAD_S);
+    config.AI_AD_SKIP_PROMPT_TTL_S = safe_int(id('ai-ad-skip-prompt-ttl').value, 0, 600, DEFAULT_CONFIG.AI_AD_SKIP_PROMPT_TTL_S);
+    config.AI_AD_SKIP_NOTE_S = safe_int(id('ai-ad-skip-note').value, 2, 60, DEFAULT_CONFIG.AI_AD_SKIP_NOTE_S);
     config.AI_AD_SKIP_MIN_S = safe_int(id('ai-ad-skip-min-s').value, 5, 60, DEFAULT_CONFIG.AI_AD_SKIP_MIN_S);
     config.AI_AD_SKIP_MAX_COVER = safe_float(id('ai-ad-skip-max-cover').value, 0.3, 0.95, DEFAULT_CONFIG.AI_AD_SKIP_MAX_COVER);
     config.AI_AD_SKIP_CACHE = id('ai-ad-skip-cache').checked;
@@ -743,6 +749,7 @@ for(let elem of [
     'ai-max-text-len', 'ai-verdict-cache',
     // AI 口播广告跳过
     'ai-ad-skip', 'ai-ad-skip-auto', 'ai-ad-skip-auto-threshold',
+    'ai-ad-skip-prompt-lead', 'ai-ad-skip-prompt-ttl', 'ai-ad-skip-note',
     'ai-ad-skip-min-s', 'ai-ad-skip-max-cover', 'ai-ad-skip-cache',
     // 其他
     'popup-badge', 'combine-threads', 'read-player-blacklist',

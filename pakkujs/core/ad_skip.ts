@@ -26,7 +26,9 @@ const AD_PACK_SPAN_S = 90;       // max subtitle time range per screening reques
 const AD_SCREEN_THRESHOLD = 0.6; // window p(ad) >= this joins an interval
 const AD_LINE_THRESHOLD = 0.5;   // subtitle line p(ad) >= this counts as ad copy
 const AD_EDGE_PAD_S = 25;        // subtitle lines taken around each coarse edge
-const AD_PROMPT_LEAD_S = 15;     // show the prompt this many seconds before the ad
+const AD_PROMPT_LEAD_S = 5;        // fallback: show the prompt this many seconds before the ad
+const AD_PROMPT_TTL_S = 30;        // fallback: prompt auto-dismisses after hanging this long
+const AD_NOTE_S = 10;              // fallback: the "skipped" notice shows this many seconds
 const AD_NEIGHBOR_EXPAND = 1;    // judged set includes N neighbors of each passing window
 const AD_GAP_FILL = 2;           // unjudged holes <= N windows between candidates are filled
 const AD_BRIDGE_GAP = 1;         // <= N unjudged windows inside an ad run are bridged
@@ -52,6 +54,7 @@ interface AdInterval {
     end_s: number;
     conf: number;
     skipped: boolean;
+    dismissed?: boolean; // user closed the prompt (✕) or let it time out: never re-show this visit
 }
 
 let scan_cid: int = 0;
@@ -541,6 +544,7 @@ function fmt_time(s: number): string {
 }
 
 let pill: HTMLElement | null = null;
+let pill_shown_at = 0; // wall clock when the current pill appeared (TTL anchor)
 let notice: HTMLElement | null = null;
 let notice_timer: any = null;
 
@@ -562,6 +566,7 @@ function remove_pill() {
         } catch(e) {}
         pill = null;
     }
+    pill_shown_at = 0;
 }
 
 function show_notice(text: string, undo_to: number | null) {
@@ -592,7 +597,9 @@ function show_notice(text: string, undo_to: number | null) {
         host.appendChild(notice);
         if(notice_timer)
             clearTimeout(notice_timer);
-        notice_timer = setTimeout(hide_notice, 6000);
+        const note_s = (watch_config && typeof watch_config.AI_AD_SKIP_NOTE_S === 'number')
+            ? watch_config.AI_AD_SKIP_NOTE_S : AD_NOTE_S;
+        notice_timer = setTimeout(hide_notice, Math.max(2, note_s) * 1000);
     } catch(e) {}
 }
 
@@ -633,9 +640,22 @@ function ui_tick() {
             remove_pill();
             return;
         }
+        const lead_s = (watch_config && typeof watch_config.AI_AD_SKIP_PROMPT_LEAD_S === 'number')
+            ? watch_config.AI_AD_SKIP_PROMPT_LEAD_S : AD_PROMPT_LEAD_S;
+        const ttl_s = (watch_config && typeof watch_config.AI_AD_SKIP_PROMPT_TTL_S === 'number')
+            ? watch_config.AI_AD_SKIP_PROMPT_TTL_S : AD_PROMPT_TTL_S;
         const cur = current_playhead_s();
-        const active = intervals.find(iv => cur >= iv.start_s - AD_PROMPT_LEAD_S && cur < iv.end_s);
+        // a dismissed interval (✕ pressed or hang timeout) stays quiet for the
+        // rest of this visit: no prompt AND no auto-skip for it
+        const active = intervals.find(iv => !iv.dismissed && cur >= iv.start_s - lead_s && cur < iv.end_s);
         if(!active) {
+            remove_pill();
+            return;
+        }
+        // the prompt only hangs for a limited window, then dismisses itself
+        // (same effect as pressing ✕); 0 = keep it until the ad is over
+        if(pill && ttl_s > 0 && Date.now() - pill_shown_at >= ttl_s * 1000) {
+            active.dismissed = true;
             remove_pill();
             return;
         }
@@ -663,9 +683,16 @@ function ui_tick() {
                 + 'font-family:sans-serif;display:flex;align-items:center;gap:10px;user-select:none;white-space:nowrap;';
             pill.innerHTML = `<span>检测到口播广告 ${fmt_time(active.start_s)}–${fmt_time(active.end_s)}</span>`
                 + '<button style="background:#fb7299;color:#fff;border:none;border-radius:12px;padding:4px 12px;'
-                + 'font-size:13px;cursor:pointer;">跳过广告</button>';
+                + 'font-size:13px;cursor:pointer;">跳过广告</button>'
+                + '<button class="pakku-ad-close" title="本次不再提示" style="background:transparent;border:none;'
+                + 'color:rgba(255,255,255,.75);cursor:pointer;font-size:16px;line-height:1;padding:4px 8px;">✕</button>';
+            pill_shown_at = Date.now();
             (pill.querySelector('button') as HTMLElement).addEventListener('click', () => {
                 skip_interval(active, 'manual');
+            });
+            (pill.querySelector('button.pakku-ad-close') as HTMLElement).addEventListener('click', () => {
+                active.dismissed = true;
+                remove_pill();
             });
             host.appendChild(pill);
         }
