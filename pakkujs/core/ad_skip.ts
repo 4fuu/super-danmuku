@@ -54,7 +54,10 @@ interface AdInterval {
     end_s: number;
     conf: number;
     skipped: boolean;
-    dismissed?: boolean; // user closed the prompt (✕) or let it time out: never re-show this visit
+    dismissed?: boolean; // user pressed ✕: never re-show this visit (prompt AND auto-skip)
+    timed_out?: boolean; // prompt hung past its TTL this pass: quiet only while the
+                         // playhead stays inside [start-lead, end); leaving the range
+                         // re-arms it so seeking back shows the prompt again
 }
 
 let scan_cid: int = 0;
@@ -196,27 +199,31 @@ function pick_candidates(stats: WindowStat[]): WindowStat[] {
 // ---- Jev requests (calibrated wording; same quota as the quality filter) ----
 
 const AD_CRITERIA = {
-    true: ('This window is part of a sponsored ad read (口播广告/商单): the creator narrates promotional copy '
-        + 'for a third-party brand or product - product pitching, promotional claims, usage testimony, sales '
-        + 'figures, discount/coupon/link calls to action, or sponsor framing such as introducing the sponsor of '
-        + 'this episode or announcing a return to the regular content. Mentions or discussion of brands/products '
-        + 'as the video\'s own topic (news, commentary, review, criticism) are NOT ads even when brand names '
-        + 'appear. Judge primarily from windows[i].subtitle_in_window (what is being said on screen); the danmaku '
-        + 'audience reactions in windows[i].danmaku_sample (complaints about ad reads, templated product praise, '
-        + 'welcome-back messages after skipping) are supporting evidence only.'),
+    true: ('This window is part of a sponsored ad read (口播广告/商单): a contiguous segment where the creator '
+        + 'narrates promotional copy for a third-party brand or product - the sponsor introduction, product '
+        + 'pitching and claims, usage instructions and ingredient explanations for the sponsor product, '
+        + 'personal-recommendation framing (\'我自己也在用\' style), usage testimony, sales figures, '
+        + 'discount/coupon/link calls to action, and the closing wrap-up that announces returning to the '
+        + 'regular content. The whole span from sponsor intro to \'back to content\' is ONE ad read, even where '
+        + 'it sounds like casual advice. Judge primarily from windows[i].subtitle_in_window (what is being said '
+        + 'on screen); the danmaku audience reactions in windows[i].danmaku_sample (complaints about ad reads, '
+        + 'templated product praise, welcome-back messages after skipping) are supporting evidence only.'),
     false: ('This window is the video\'s own editorial content: the creator\'s regular narration on the video '
         + 'topic, including discussing brands or products as subject matter (news about a marketing incident, '
-        + 'product reviews, commentary). When unsure, lean toward not-ad: a wrong skip prompt is worse than a '
-        + 'missed ad.'),
+        + 'product reviews, criticism). Only lean toward not-ad when the window is genuinely ambiguous between '
+        + 'discussing a brand as topic versus pitching it; a window that is clearly mid-pitch for the sponsor '
+        + 'product (claims, usage instructions, discount calls to action) is not a case of \'unsure\'.'),
 };
 
 const AD_LINE_CRITERIA = {
     true: ('This subtitle line is part of the sponsored ad read: promotional narration for the third-party '
-        + 'product advertised in ad_context (product pitch, claims, testimony, sales figures, calls to action). '
-        + 'Lines that merely transition (announcing the sponsor segment, or announcing the return to regular '
-        + 'content) count as part of the ad read. Regular editorial content on the video topic does not.'),
-    false: ('This subtitle line is the video\'s own editorial content, not sponsor copy. When unsure lean '
-        + 'toward not-ad.'),
+        + 'product advertised in ad_context (product pitch, claims, usage instructions, testimony, sales '
+        + 'figures, discount/coupon calls to action). The ad read is one contiguous segment: opening lines '
+        + 'that announce the sponsor segment AND closing lines that wrap it up and announce the return to '
+        + 'regular content (e.g. 好的/那么我们回到...) all belong to the ad read. Regular editorial content on '
+        + 'the video topic does not.'),
+    false: ('This subtitle line is the video\'s own editorial content, not sponsor copy. When genuinely unsure '
+        + 'lean toward not-ad.'),
 };
 
 async function jev_with_retry(body: any, prio_s: number): Promise<any> {
@@ -517,6 +524,8 @@ async function perform_scan(cid: int, config: LocalizedConfig) {
     ai_log_append({
         type: 'ad_scan', ts: Date.now(), cid,
         windows_judged: p_ad.size, packs: packs.length,
+        window_ps: [...p_ad.entries()].sort((a, b) => a[0] - b[0])
+            .map(([w, p]) => [w * AD_WINDOW_S, Math.round(p * 100) / 100]),
         intervals: intervals.map(iv => ({
             start: Math.round(iv.start_s), end: Math.round(iv.end_s), conf: Math.round(iv.conf * 100) / 100,
         })),
@@ -645,17 +654,23 @@ function ui_tick() {
         const ttl_s = (watch_config && typeof watch_config.AI_AD_SKIP_PROMPT_TTL_S === 'number')
             ? watch_config.AI_AD_SKIP_PROMPT_TTL_S : AD_PROMPT_TTL_S;
         const cur = current_playhead_s();
-        // a dismissed interval (✕ pressed or hang timeout) stays quiet for the
-        // rest of this visit: no prompt AND no auto-skip for it
-        const active = intervals.find(iv => !iv.dismissed && cur >= iv.start_s - lead_s && cur < iv.end_s);
+        // TTL expiry is reversible: once the playhead leaves the interval's
+        // prompt range, re-arm so a later visit (e.g. dragging the progress
+        // bar back) shows the prompt again. ✕ (dismissed) stays permanent.
+        for(const iv of intervals)
+            if(iv.timed_out && !iv.dismissed && (cur < iv.start_s - lead_s || cur >= iv.end_s))
+                iv.timed_out = false;
+        // a dismissed (✕) or timed-out interval stays quiet: no prompt AND no
+        // auto-skip for it (timed-out only until re-armed above)
+        const active = intervals.find(iv => !iv.dismissed && !iv.timed_out && cur >= iv.start_s - lead_s && cur < iv.end_s);
         if(!active) {
             remove_pill();
             return;
         }
-        // the prompt only hangs for a limited window, then dismisses itself
-        // (same effect as pressing ✕); 0 = keep it until the ad is over
+        // the prompt only hangs for a limited window, then dismisses itself;
+        // 0 = keep it until the ad is over (no timed_out flag is ever set)
         if(pill && ttl_s > 0 && Date.now() - pill_shown_at >= ttl_s * 1000) {
-            active.dismissed = true;
+            active.timed_out = true;
             remove_pill();
             return;
         }

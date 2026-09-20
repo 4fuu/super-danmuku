@@ -357,7 +357,9 @@ async function run_scan(cid, cfg, entries) {
     assert(!dom.pill(), 'a dismissed interval never prompts again this visit');
     console.log('scenario10a-c: lead window opens at start-5, ✕ dismisses for the visit');
 
-    // (d) hang TTL auto-dismisses (short TTL, nobody clicks anything)
+    // (d) hang TTL auto-dismisses (short TTL, nobody clicks anything); the flag
+    // re-arms once the playhead leaves the prompt range, so seeking back in
+    // shows the prompt again (✕ stays permanent for the whole visit)
     const dom2 = make_dom_mock();
     dom2.video.currentTime = 252.35 - 4;
     await run_scan(20202, {...CFG_UI, AI_AD_SKIP_PROMPT_TTL_S: 2}, FIXTURE_DANMAKU);
@@ -367,8 +369,28 @@ async function run_scan(cid, cfg, entries) {
     assert(!dom2.pill(), 'prompt auto-dismisses after hanging for the TTL');
     dom2.video.currentTime = 300;
     await sleep(1300);
-    assert(!dom2.pill(), 'timed-out interval does not prompt again');
-    console.log('scenario10d: TTL auto-dismiss');
+    assert(!dom2.pill(), 'timed-out interval stays quiet while still inside the ad');
+    dom2.video.currentTime = 100; // seek out of [start-lead, end)
+    await sleep(1300);
+    dom2.video.currentTime = 252.35 - 4; // drag back in
+    await sleep(1300);
+    assert(dom2.pill(), 'leaving and re-entering the range re-arms the prompt');
+    await sleep(3000); // let it time out again
+    assert(!dom2.pill(), 're-armed prompt hangs for the TTL again');
+    dom2.video.currentTime = 100; // seek out and back once more
+    await sleep(1300);
+    dom2.video.currentTime = 300;
+    await sleep(1300);
+    assert(dom2.pill(), 'second re-arm also prompts');
+    dom2.pill()._subs['button.pakku-ad-close'].listeners.click(); // ✕ this time
+    await sleep(600);
+    assert(!dom2.pill(), '✕ removes the prompt');
+    dom2.video.currentTime = 100;
+    await sleep(1300);
+    dom2.video.currentTime = 252.35 - 4;
+    await sleep(1300);
+    assert(!dom2.pill(), '✕ is permanent for the visit even after leaving the range');
+    console.log('scenario10d: TTL auto-dismiss re-arms on leaving the range; ✕ stays permanent');
 
     // (e) manual skip: notice shows for AI_AD_SKIP_NOTE_S, then disappears
     const dom3 = make_dom_mock();

@@ -46,6 +46,9 @@ function render(all_lines: any[]) {
         } else if(r.type === 'ad_scan') {
             let ivs = (r.intervals || []).map((iv: any) => `${iv.start}s~${iv.end}s@${(iv.conf ?? 0).toFixed(2)}`).join('，');
             out.push(`[${ts}] 广告扫描 cid=${r.cid} 判定窗口=${r.windows_judged} 请求=${r.packs} 区间=[${ivs || '无'}] ${r.api_ms}ms${r.error ? ' 错误: ' + r.error : ''}`);
+            let ps = (r.window_ps || []).map((wp: any) => `${wp[0]}s=${(wp[1] ?? 0).toFixed(2)}`);
+            if(ps.length)
+                out.push(`    窗口判分 ${ps.join(' ')}`);
         }
     }
     view.textContent = out.join('\n');
