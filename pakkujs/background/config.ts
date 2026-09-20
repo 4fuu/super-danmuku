@@ -96,6 +96,13 @@ async function getChatResponse({ apiKey, baseUrl, model, messages }) {
     AI_MAX_TEXT_LEN: 12, // danmaku longer than this skip judgement and pass through; short spam is where the problem is
     AI_VERDICT_CACHE: false, // experimental: persist per-(cid, window, text) verdicts; off until the pipeline stabilizes
 
+    // AI 口播广告跳过（独立管线：弹幕 + 字幕 + Jev 语义判定）
+    AI_AD_SKIP: false, // detect spoken ad reads and show a skip prompt on the player
+    AI_AD_SKIP_AUTO: false, // additionally auto-skip when confidence is high enough
+    AI_AD_SKIP_AUTO_THRESHOLD: 0.9, // auto-skip when interval confidence >= this (0.5~1)
+    AI_AD_SKIP_MIN_S: 10, // reads shorter than this are not worth a jarring cut (one-line sponsor mentions)
+    AI_AD_SKIP_MAX_COVER: 0.6, // ads covering >= this fraction of the video mean the promotion IS the content (dedicated / soft ad): no prompts
+
     // 其他
     POPUP_BADGE: 'percent' as ('percent' | 'count' | 'dispval' | 'off'),
     COMBINE_THREADS: 4,

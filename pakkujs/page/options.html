@@ -332,6 +332,43 @@
             </tr>
             <tr>
                 <td></td>
+                <td>AI 口播广告跳过</td>
+                <td>
+                    <p>
+                        <input id="ai-ad-skip" type="checkbox">
+                        <label for="ai-ad-skip">启用口播广告检测提示：</label>
+                        <span>独立于弹幕过滤的检测管线：结合字幕与弹幕反应，用 AI 判定视频中的口播广告片段（商单推广，不含把品牌当作话题讨论的内容），在播放器顶部中间显示提示，可一键跳过</span>
+                    </p>
+                    <p>
+                        <input id="ai-ad-skip-auto" type="checkbox">
+                        <label for="ai-ad-skip-auto">高置信度自动跳过：</label>
+                        <span>检测置信度足够高时直接跳过广告片段（跳过后短时间内可点「回到」撤回）</span>
+                    </p>
+                    <p>
+                        <label for="ai-ad-skip-auto-threshold">自动跳过阈值：</label>
+                        置信度 ≥
+                        <input id="ai-ad-skip-auto-threshold" type="number" min="0.5" max="1" step="0.05" style="width: 70px">
+                        时自动跳过（默认 0.9；手动点击跳过按钮不受此阈值影响）
+                    </p>
+                    <p>
+                        <label for="ai-ad-skip-min-s">最短提示时长：</label>
+                        <input id="ai-ad-skip-min-s" type="number" min="5" max="60" step="1" style="width: 70px">
+                        秒（短于此时长的口播不提示跳过——比如一句带过的赞助商，跳了反而割裂；默认 10）
+                    </p>
+                    <p>
+                        <label for="ai-ad-skip-max-cover">最大覆盖比例：</label>
+                        检测到的口播合计 ≥ 视频时长的
+                        <input id="ai-ad-skip-max-cover" type="number" min="0.3" max="0.95" step="0.05" style="width: 70px">
+                        时，视为「广告即内容」（全片定制、软广），不再提示（默认 0.6）
+                    </p>
+                    <p class="warning">
+                        * 使用与 AI 弹幕过滤相同的 API key 与请求配额；无字幕时降级为仅弹幕判定（精度略降）。检测失败时静默跳过，不影响播放
+                    </p>
+                </td>
+                <td></td>
+            </tr>
+            <tr>
+                <td></td>
                 <td>设置管理</td>
                 <td>
                     <p>

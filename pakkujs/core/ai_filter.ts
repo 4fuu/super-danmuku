@@ -78,7 +78,7 @@ function hash_str(s: string): string {
     return (h >>> 0).toString(36);
 }
 
-function call_jev(body: any): Promise<any> {
+export function call_jev(body: any): Promise<any> {
     return new Promise((resolve, reject) => {
         try {
             chrome.runtime.sendMessage({type: 'jev_call', body}, (resp: any) => {
@@ -98,7 +98,7 @@ function call_jev(body: any): Promise<any> {
     });
 }
 
-class RetryableError extends Error {
+export class RetryableError extends Error {
     constructor(public retry_after_ms: int) {
         super('retryable (rate limited)');
     }
@@ -116,7 +116,7 @@ const AI_RATE_PER_S = 15; // request starts per second (75% of the official 20/s
 const AI_RATE_BURST = 4;  // bucket capacity: a tiny burst, then one start per 1/rate
 let rl_tokens = AI_RATE_BURST;
 let rl_last_refill = Date.now();
-async function rl_acquire(): Promise<void> {
+export async function rl_acquire(): Promise<void> {
     while(true) {
         let now = Date.now();
         rl_tokens = Math.min(AI_RATE_BURST, rl_tokens + (now - rl_last_refill) * AI_RATE_PER_S / 1000);
@@ -142,7 +142,7 @@ const SEMANTIC_WINDOW_S = 5;
 const SEMANTIC_WINDOW_MS = SEMANTIC_WINDOW_S * 1000;
 const PACK_SPAN_S = 90; // hard cap on one request's subtitle time range
 
-function with_timeout<T>(p: Promise<T>, ms: int, fallback: T): Promise<T> {
+export function with_timeout<T>(p: Promise<T>, ms: int, fallback: T): Promise<T> {
     return new Promise((resolve) => {
         let done = false;
         let timer = setTimeout(() => {
@@ -329,6 +329,9 @@ class Semaphore {
     }
 }
 const global_sem = new Semaphore(8);
+export function get_jev_semaphore() {
+    return global_sem;
+}
 
 // ---- diagnostic log (viewable & exportable from the options page) ----
 // incremental stats hook: the scheduler registers a callback so per-window
@@ -348,6 +351,7 @@ function ai_log_append(rec: any) {
         chrome.runtime.sendMessage({type: 'ai_log_append', rec}, () => void chrome.runtime.lastError);
     } catch(e) {}
 }
+export {ai_log_append};
 
 // ---- persistent verdict cache (L2, survives reloads; designed for later sharing) ----
 // entry: {p: p_worst, s: score, m: model, t: timestamp_ms, b: bvid}; key: cid|window_lo|text
@@ -678,7 +682,7 @@ function gate_hide_overlay() {
     }
 }
 
-function jev_ready(): Promise<boolean> {
+export function jev_ready(): Promise<boolean> {
     return new Promise((resolve) => {
         try {
             chrome.runtime.sendMessage({type: 'jev_ready'}, (resp: any) => {
@@ -692,7 +696,7 @@ function jev_ready(): Promise<boolean> {
     });
 }
 
-function refresh_video_ctx_from_dom() {
+export function refresh_video_ctx_from_dom() {
     if(video_ctx.title)
         return;
     try {
@@ -718,7 +722,7 @@ interface SubtitleLine {from: number, to: number, content: string}
 let subtitle_lines: SubtitleLine[] | null = null;
 let subtitle_video_key = '';
 
-function get_bvid_from_url(): string {
+export function get_bvid_from_url(): string {
     try {
         let m = location.pathname.match(/BV[0-9A-Za-z]{10}/);
         return m ? m[0] : '';
@@ -741,7 +745,7 @@ function fetch_subtitle(bvid: string, cid: int): Promise<SubtitleLine[] | null> 
     });
 }
 
-async function ensure_subtitle(video_key: string, bvid: string, cid: int, timeout_ms: int) {
+export async function ensure_subtitle(video_key: string, bvid: string, cid: int, timeout_ms: int) {
     if(subtitle_video_key === video_key)
         return; // already fetched (or failed) for this video
     subtitle_video_key = video_key;
@@ -753,7 +757,11 @@ async function ensure_subtitle(video_key: string, bvid: string, cid: int, timeou
         console.debug('pakku ai_filter: no subtitle context (not logged in, no AI subtitle, or fetch failed)');
 }
 
-function slice_subtitle(lo_s: number, hi_s: number): string {
+export function get_subtitle_lines(): SubtitleLine[] | null {
+    return subtitle_lines;
+}
+
+export function slice_subtitle(lo_s: number, hi_s: number): string {
     if(!subtitle_lines || !subtitle_lines.length)
         return '';
     let parts: string[] = [];

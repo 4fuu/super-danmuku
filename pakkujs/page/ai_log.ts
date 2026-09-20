@@ -37,6 +37,9 @@ function render(lines: any[]) {
             out.push(`[${ts}] 分片${r.segidx} 窗口${r.window}s 候选=${r.cands} 删=${r.del_spam}+${r.del_ratio} ${r.api_ms}ms${r.error ? ' 错误: ' + r.error : ''}`);
             for(let c of r.detail || [])
                 out.push(`    ${c.k === 0 ? '✗删' : c.k === 2 ? '↓汰' : '✓留'} p=${(c.p ?? 0).toFixed(2)} q=${c.s} ×${c.n} ${c.t}`);
+        } else if(r.type === 'ad_scan') {
+            let ivs = (r.intervals || []).map((iv: any) => `${iv.start}s~${iv.end}s@${(iv.conf ?? 0).toFixed(2)}`).join('，');
+            out.push(`[${ts}] 广告扫描 cid=${r.cid} 判定窗口=${r.windows_judged} 请求=${r.packs} 区间=[${ivs || '无'}] ${r.api_ms}ms${r.error ? ' 错误: ' + r.error : ''}`);
         }
     }
     view.textContent = out.join('\n');

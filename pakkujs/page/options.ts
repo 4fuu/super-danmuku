@@ -410,6 +410,12 @@ function loadconfig() {
     id('ai-pause-gate').checked = config.AI_PAUSE_GATE;
     id('ai-max-text-len').value = config.AI_MAX_TEXT_LEN;
     id('ai-verdict-cache').checked = config.AI_VERDICT_CACHE;
+    // AI 口播广告跳过
+    id('ai-ad-skip').checked = config.AI_AD_SKIP;
+    id('ai-ad-skip-auto').checked = config.AI_AD_SKIP_AUTO;
+    id('ai-ad-skip-auto-threshold').value = config.AI_AD_SKIP_AUTO_THRESHOLD;
+    id('ai-ad-skip-min-s').value = config.AI_AD_SKIP_MIN_S;
+    id('ai-ad-skip-max-cover').value = config.AI_AD_SKIP_MAX_COVER;
     void chrome.storage.local.get('AI_API_KEY', (st: any) => {
         let k: string = st.AI_API_KEY || '';
         id('ai-api-key').value = k;
@@ -656,6 +662,12 @@ function update(this: HTMLInputElement) {
     config.AI_PAUSE_GATE = id('ai-pause-gate').checked;
     config.AI_MAX_TEXT_LEN = safe_int(id('ai-max-text-len').value, 5, 200, DEFAULT_CONFIG.AI_MAX_TEXT_LEN);
     config.AI_VERDICT_CACHE = id('ai-verdict-cache').checked;
+    // AI 口播广告跳过
+    config.AI_AD_SKIP = id('ai-ad-skip').checked;
+    config.AI_AD_SKIP_AUTO = id('ai-ad-skip-auto').checked;
+    config.AI_AD_SKIP_AUTO_THRESHOLD = safe_float(id('ai-ad-skip-auto-threshold').value, 0.5, 1, DEFAULT_CONFIG.AI_AD_SKIP_AUTO_THRESHOLD);
+    config.AI_AD_SKIP_MIN_S = safe_int(id('ai-ad-skip-min-s').value, 5, 60, DEFAULT_CONFIG.AI_AD_SKIP_MIN_S);
+    config.AI_AD_SKIP_MAX_COVER = safe_float(id('ai-ad-skip-max-cover').value, 0.3, 0.95, DEFAULT_CONFIG.AI_AD_SKIP_MAX_COVER);
     void chrome.storage.local.set({AI_API_KEY: id('ai-api-key').value.trim()});
     // 其他
     config.POPUP_BADGE = id('popup-badge').value;

@@ -277,7 +277,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                     sendResponse({error: 'no_subtitle', lines: []}); // remember: don't retry this video
                     return;
                 }
-                let rank = (x: any) => x.lan==='ai-zh' ? 0 : (x.lan||'').startsWith('zh') ? 1 : 2;
+                // uploader-provided (non-AI) Chinese subtitles are the most accurate
+                // transcript; fall back to the AI Chinese track, which newer videos
+                // essentially always have, then any other track
+                let rank = (x: any) => {
+                    let lan = x.lan || '';
+                    if(lan.startsWith('zh'))
+                        return 0;
+                    if(lan === 'ai-zh')
+                        return 1;
+                    if(lan.startsWith('ai'))
+                        return 2;
+                    return 3;
+                };
                 subs.sort((a: any, b: any) => rank(a) - rank(b));
                 let url: string = subs[0].subtitle_url || '';
                 if(url.startsWith('//'))

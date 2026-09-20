@@ -13,6 +13,7 @@ import {
 } from "./types";
 import {post_combine} from "./post_combine";
 import {ai_filter_chunk, set_ai_stats_hook} from "./ai_filter";
+import {ad_skip_on_ingress, ad_skip_feed_chunk, ad_skip_begin_scan} from "./ad_skip";
 import {UserscriptWorker} from "./userscript";
 import {do_inject} from "../injected/do_inject";
 import {
@@ -418,6 +419,7 @@ class Scheduler {
 
     async start() {
         this.write_cur_message_stats();
+        ad_skip_on_ingress(this.ingress, this.config);
 
         if(this.prefetch_data && this.prefetch_data.guessed_chunks && this.prefetch_data.guessed_chunks<this.pool.pool_size)
             this.pool.pool_size = this.prefetch_data.guessed_chunks;
@@ -449,6 +451,7 @@ class Scheduler {
 
                 chunk.objs.sort((a, b) => a.time_ms - b.time_ms);
                 this.chunks_in.set(idx, chunk);
+                ad_skip_feed_chunk(this.ingress, chunk);
 
                 this.ongoing_stats.num_total_danmu += chunk.objs.length;
                 this.write_cur_message_stats();
@@ -462,6 +465,7 @@ class Scheduler {
         }
 
         this.num_chunks = this.chunks_in.size;
+        ad_skip_begin_scan(this.ingress, this.config);
 
         this.ongoing_stats.download_time_ms = +new Date() - this.start_ts;
         console.log('pakku scheduler: download finished, total chunks =', this.num_chunks);

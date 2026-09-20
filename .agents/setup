@@ -22,8 +22,8 @@ run 'npm install' npm install --no-audit --no-fund
 
 # Python deps for tools/bili_login.py and tools/fetch_subtitle.py (Bilibili dev
 # utilities; optional for the build, guarded so warm runs skip it).
-if ! python3 -c 'import requests, qrcode' >/dev/null 2>&1; then
-    run 'python deps (requests, qrcode)' uv pip install --system requests qrcode
+if ! python3 -c 'import requests, qrcode, socks, PIL' >/dev/null 2>&1; then
+    run 'python deps (requests, qrcode, pysocks, pillow)' uv pip install --system requests qrcode pysocks pillow
 else
     echo '[setup] python deps already present, skipping'
 fi
