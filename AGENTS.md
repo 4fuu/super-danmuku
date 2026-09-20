@@ -34,7 +34,7 @@ node tools/smoke_ai_filter.js   # AI 过滤层冒烟测试（mock chrome 与 Jev
 
 ## 发布
 
-推送到 master 即自动发布：`.github/workflows/release.yml` 读取 `pakkujs/manifest.json` 的版本号（`YYYY.MDD.N`，按 Asia/Shanghai 当日日期校验），该版本无对应 tag 时自动构建 Chrome/Firefox 包、跑冒烟测试并创建 release（提交列表即 release note）。发布 = 把 manifest 版本号改成当天新序号并推送，无需其他手动步骤。
+发布为手动触发：`.github/workflows/release.yml` 仅由 `workflow_dispatch` 触发（GitHub 界面 Actions → Release → Run workflow，或 `gh workflow run release.yml`）。它读取 `pakkujs/manifest.json` 的版本号（`YYYY.MDD.N`，按 Asia/Shanghai 当日日期校验），该版本无对应 tag 时构建 Chrome/Firefox 包、跑冒烟测试并创建 release（提交列表即 release note）。发布步骤：把 manifest 版本号改成当天新序号并推送，然后在同一上海日内手动触发该工作流。重复触发是安全的：版本已存在对应 release 时自动跳过；普通推送不再触发发布。
 
 发布产物：Chrome 包、Firefox 包、源码包（`git archive` 生成，供 AMO 人工提交时满足"提供源码"要求）。商店上架为人工操作：从 release 下载对应 zip，AMO 上传 firefox 包（listed 渠道，源码步骤上传 source 包或填仓库链接），Chrome Web Store 上传 chrome 包。
 
