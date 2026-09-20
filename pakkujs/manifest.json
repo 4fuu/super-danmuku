@@ -1,7 +1,7 @@
 {
     "name": "super-danmuku：哔哩哔哩弹幕AI过滤器",
     "short_name": "super-danmuku",
-    "version": "2026.920.1",
+    "version": "2026.920.2",
     "description": "合并B站(bilibili.com)刷屏弹幕，并用 AI 实时过滤低质量、与视频无关的弹幕，还你清爽的弹幕视频体验。",
     "homepage_url": "https://github.com/4fuu/super-danmuku",
     "icons": {
@@ -9,10 +9,8 @@
         "48": "assets/logo_48.png"
     },
     "author": "4fuu",
-    
     "manifest_version": 3,
     "minimum_chrome_version": "94",
-    
     "permissions": [
         "notifications",
         "storage",
@@ -29,7 +27,6 @@
         "ws://*.bilibili.com/*",
         "wss://*.bilibili.com/*"
     ],
-
     "options_ui": {
         "page": "page/options.html",
         "open_in_tab": true
@@ -56,28 +53,44 @@
             "description": "打开对话框"
         }
     },
-    
     "background": {
         "service_worker": "generated/background.js"
     },
     "content_scripts": [
         {
-            "matches": ["*://*.bilibili.com/*"],
-            "exclude_matches": ["https://www.bilibili.com/robots.txt?pakku_sandbox"],
-            "js": ["/generated/content_script.js"],
+            "matches": [
+                "*://*.bilibili.com/*"
+            ],
+            "exclude_matches": [
+                "https://www.bilibili.com/robots.txt?pakku_sandbox"
+            ],
+            "js": [
+                "/generated/content_script.js"
+            ],
             "run_at": "document_start",
             "all_frames": false
         },
         {
-            "matches": ["https://www.bilibili.com/robots.txt?pakku_sandbox"],
-            "js": ["/generated/content_script.js"],
+            "matches": [
+                "https://www.bilibili.com/robots.txt?pakku_sandbox"
+            ],
+            "js": [
+                "/generated/content_script.js"
+            ],
             "run_at": "document_start",
             "all_frames": true
         }
     ],
-
-    "web_accessible_resources": [{
-        "resources": ["/generated/combine_worker.js", "/generated/xhr_hook.js", "/assets/similarity-gen.wasm"],
-        "matches": ["*://*.bilibili.com/*"]
-    }]
+    "web_accessible_resources": [
+        {
+            "resources": [
+                "/generated/combine_worker.js",
+                "/generated/xhr_hook.js",
+                "/assets/similarity-gen.wasm"
+            ],
+            "matches": [
+                "*://*.bilibili.com/*"
+            ]
+        }
+    ]
 }
