@@ -424,6 +424,43 @@ const assert = (cond, msg) => { if(!cond) { console.error('FAIL:', msg); process
     assert(dt11 >= 300, `request starts are paced under the rate limit (${dt11}ms for 10 windows)`);
     assert(dt11 < 2000, `pacing is proportional, not serialized (${dt11}ms)`);
 
+    // ===== scenario 12: concurrent segments each report deletions via their own callback =====
+    // regression for the popup's 'AI 判定无关' row disappearing: ai_deleted used
+    // to accumulate through a module-global stats hook, and whichever segment
+    // finished first tore it down while the others were still judging, so their
+    // deletions never reached the popup. Each call now owns an on_deleted
+    // callback, so segment B must keep reporting after segment A has returned.
+    jev_calls = [];
+    jev_delay_ms = 0;
+    const cfg12 = {...config, AI_PAUSE_GATE: false, AI_CONCURRENCY: 8, AI_RATIO: 0, AI_BUDGET_MS: 20000};
+    const mk_seg12 = (base_s, tag, n_win) => {
+        const objs = [];
+        for(let w = 0; w < n_win; w++) { // one spam + two normal danmaku per window
+            objs.push(mkobj((base_s + w * 30 + .5) * 1000, tag + '中签甲', 2 + w));
+            objs.push(mkobj((base_s + w * 30 + 1.5) * 1000, tag + '普通乙', 1));
+            objs.push(mkobj((base_s + w * 30 + 2.5) * 1000, tag + '普通丙', 1));
+        }
+        return objs;
+    };
+    let delA = 0, delB = 0, delB_after_A = 0, a_done_at = 0;
+    // A (seg 40, a single pack) fires first and settles within the initial
+    // token-burst; B's remaining packs are paced by the token bucket and settle
+    // strictly afterwards — exactly the window where the old module-global hook
+    // had already been torn down by A's return
+    const pA12 = mod.ai_filter_chunk({objs: mk_seg12(0, '十二A', 2), extra: {proto_segidx: 40}}, cfg12, 40, d => delA += d);
+    const pB12 = mod.ai_filter_chunk({objs: mk_seg12(600, '十二B', 20), extra: {proto_segidx: 41}}, cfg12, 41, d => {
+        delB += d;
+        if(a_done_at && Date.now() >= a_done_at) delB_after_A += d;
+    });
+    const resA12 = await pA12;
+    a_done_at = Date.now();
+    const resB12 = await pB12;
+    await sleep(200);
+    console.log(`scenario12: A delta=${delA} (res ${resA12.ai_deleted}), B delta=${delB} (res ${resB12.ai_deleted}, of which ${delB_after_A} after A finished)`);
+    assert(delA > 0 && delA === resA12.ai_deleted + resA12.ai_deleted_ratio, 'segment A reports exactly its own deletions');
+    assert(delB > 0 && delB === resB12.ai_deleted + resB12.ai_deleted_ratio, 'segment B reports exactly its own deletions');
+    assert(delB_after_A > 0, 'segment B deletions still reported after segment A already finished (global-hook regression)');
+
     console.log('ALL ASSERTIONS PASSED');
     process.exit(0); // the gate's poll timer would otherwise hold the process open
 })().catch(e => { console.error(e); process.exit(1); });

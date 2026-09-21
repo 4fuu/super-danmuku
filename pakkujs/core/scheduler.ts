@@ -12,7 +12,7 @@ import {
     Stats,
 } from "./types";
 import {post_combine} from "./post_combine";
-import {ai_filter_chunk, set_ai_stats_hook} from "./ai_filter";
+import {ai_filter_chunk} from "./ai_filter";
 import {ad_skip_on_ingress, ad_skip_feed_chunk, ad_skip_begin_scan} from "./ad_skip";
 import {UserscriptWorker} from "./userscript";
 import {do_inject} from "../injected/do_inject";
@@ -270,17 +270,18 @@ class Scheduler {
             try {
                 let t1 = +new Date();
 
-                // every deletion path in ai_filter (threshold, ratio, cache hit,
-                // background completion) reports through this hook while it is
-                // registered, so the hook deltas are the ONLY place ai_deleted
-                // accumulates — adding AiFilterResult's totals on top would
-                // double-count every deleted danmaku
-                set_ai_stats_hook((delta) => {
+                // ai_deleted accumulates ONLY from these per-deletion deltas —
+                // adding AiFilterResult's totals on top would double-count every
+                // deleted danmaku. The callback is passed per call, not through
+                // a module-global hook: segments post-process concurrently and a
+                // global would be torn down by whichever segment finished first,
+                // silently dropping the other segments' deletions from the popup.
+                const on_ai_deleted = (delta: int) => {
                     this.ongoing_stats.ai_deleted += delta;
                     this.write_cur_message_stats();
-                });
+                };
                 const objs_before_ai = chunk_out.objs.length;
-                let ai_res = await ai_filter_chunk(chunk_out, this.config, segidx);
+                let ai_res = await ai_filter_chunk(chunk_out, this.config, segidx, on_ai_deleted);
                 chunk_out = ai_res.chunk;
                 // num_onscreen_danmu was counted inside post_combine BEFORE the
                 // AI filter ran: subtract the clusters it removed so the popup's
@@ -290,11 +291,9 @@ class Scheduler {
 
                 let t2 = +new Date();
                 this.ongoing_stats.ai_filter_time_ms += Math.ceil(t2 - t1);
-                set_ai_stats_hook(null);
             } catch(e) {
                 // fail-open: AI filter must never break danmaku loading
                 console.warn('pakku ai_filter: error, passing chunk through unchanged', e);
-                set_ai_stats_hook(null);
             }
         }
 

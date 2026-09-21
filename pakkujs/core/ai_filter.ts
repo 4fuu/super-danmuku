@@ -334,17 +334,6 @@ export function get_jev_semaphore() {
 }
 
 // ---- diagnostic log (viewable & exportable from the options page) ----
-// incremental stats hook: the scheduler registers a callback so per-window
-// deletions land in the popup/badge live during the (long) full-judgment
-// wait; the scheduler relies on these deltas exclusively for ai_deleted
-let ai_stats_hook: ((delta_deleted: int)=>void) | null = null;
-export function set_ai_stats_hook(fn: ((delta_deleted: int)=>void) | null) {
-    ai_stats_hook = fn;
-}
-function ai_report_deleted(delta: int) {
-    if(delta > 0 && ai_stats_hook)
-        try { ai_stats_hook(delta); } catch(e) {}
-}
 
 function ai_log_append(rec: any) {
     try {
@@ -787,10 +776,23 @@ export async function ai_filter_chunk(
     chunk: DanmuChunk<DanmuObjectRepresentative>,
     config: LocalizedConfig,
     segidx: int,
+    on_deleted?: (delta_deleted: int) => void,
 ): Promise<AiFilterResult> {
     const ret: AiFilterResult = {chunk, ai_deleted: 0, ai_deleted_ratio: 0, ai_windows: 0, ai_error: null};
     if(!config.AI_FILTER)
         return ret;
+
+    // per-call stats reporting: segments post-process concurrently, so this
+    // must NOT be a module-global hook — whichever segment finished first
+    // would tear it down and silently drop the other segments' deletions from
+    // the popup. Reporting also stops at ship time: once the budget races past
+    // pending packs the chunk ships unfiltered, so deletions landing only in
+    // background tasks must not count toward the popup's totals.
+    let shipped = false;
+    const report_deleted = (delta: int) => {
+        if(delta > 0 && on_deleted && !shipped)
+            try { on_deleted(delta); } catch(e) {}
+    };
 
     refresh_video_ctx_from_dom();
     if(!await jev_ready()) {
@@ -927,7 +929,7 @@ export async function ai_filter_chunk(
                 for(let i = 0; i < drop_n; i++) {
                     ratio_deleted.add(st.survivors[i].c.idx);
                     ret.ai_deleted_ratio += st.survivors[i].c.count;
-                    ai_report_deleted(st.survivors[i].c.count);
+                    report_deleted(st.survivors[i].c.count);
                     let lc = st.log_cands.find(x => x.t === st.survivors[i].c.obj.content && x.k === 1);
                     if(lc)
                         lc.k = 2;
@@ -982,7 +984,7 @@ export async function ai_filter_chunk(
                 if(s && s.p_worst >= del_thr) {
                     deleted.add(c.idx);
                     ret.ai_deleted += c.count;
-                    ai_report_deleted(c.count);
+                    report_deleted(c.count);
                     st.log_cands.push({t: c.obj.content, n: c.count, p: s.p_worst, s: s.score, k: 0});
                 } else {
                     st.survivors.push({c, score: s ? s.score : 2});
@@ -1002,6 +1004,7 @@ export async function ai_filter_chunk(
         Promise.all(tasks),
         new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, deadline - Date.now()))),
     ]);
+    shipped = true; // deletions past this point never reach the shipped chunk
 
     if(deleted.size || ratio_deleted.size) {
         ret.chunk = {
